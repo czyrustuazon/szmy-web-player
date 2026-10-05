@@ -217,6 +217,9 @@ func TestHealthStaticAndSecurityHeaders(t *testing.T) {
 		!strings.Contains(h.Get("Content-Security-Policy"), "default-src 'self'") || h.Get("Referrer-Policy") != "no-referrer" {
 		t.Errorf("missing security headers: %v", h)
 	}
+	if h.Get("Strict-Transport-Security") != "" {
+		t.Error("HSTS must not be sent when not serving over https")
+	}
 	wantStatus(t, e.do("GET", "/nope.js", nil, nil), 404)
 }
 
@@ -270,6 +273,9 @@ func TestSecureCookieFlag(t *testing.T) {
 	e.srv.Cfg.CookieSecure = true
 	if c := e.login(); !c.Secure {
 		t.Error("cookie should be Secure when configured")
+	}
+	if got := e.do("GET", "/", nil, nil).Header().Get("Strict-Transport-Security"); got != "max-age=31536000" {
+		t.Errorf("HSTS over https: %q", got)
 	}
 }
 

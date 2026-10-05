@@ -33,7 +33,7 @@ internet through a router port-forward, is refused with a 403 (see [Who can conn
 connect* can play, upload and delete. Combined with the access rules above that is usually what you
 want on a private network; set a password in `.env` to add a login on top.
 
-`make help` lists every target (`dev` for fast rebuilds, `down`, `restart`, `shell`,
+`make help` lists every target (`dev` for fast rebuilds, `down`, `restart`, `logout-all`, `shell`,
 `status`, `clean`, `test`, `smoke`, `deploy`).
 
 ### Without Docker
@@ -191,19 +191,54 @@ and anyone not signed in, sees nothing but the sign-in page.
 
 Notes:
 
-- Keep the default `MP_ALLOWED_NETS` and `MP_TRUSTED_PROXIES`. Tunnel connections come from this
-  machine, so they are judged by the visitor address `cloudflared` passes on, against
-  `MP_TUNNEL_NETS`. Its default, `any`, means **Google sign-in carries all of the protection** for
-  tunnel visitors. `MP_KNOWN_DEVICES` does not apply to them (they are not Tailscale peers).
+- Tunnel connections come from this machine, so they are judged by the visitor address
+  `cloudflared` passes on, against `MP_TUNNEL_NETS`. Its default, `any`, means **Google sign-in
+  carries all of the protection** for tunnel visitors. `MP_KNOWN_DEVICES` does not apply to them
+  (they are not Tailscale peers). The defaults work, but leave a side door open; see
+  [Closing the home-network side door](#closing-the-home-network-side-door).
 - **Recommended: put Cloudflare Access in front** (next section).
 - Turning the login off (no password and no Google) does not open the tunnel: every request through
   it is refused (see [Who can connect](#who-can-connect)).
 - The address must be listed exactly (case does not matter), and Google must have verified it.
   `you+tag@gmail.com` and `y.o.u@gmail.com` are different entries from `you@gmail.com`.
-- Sessions last 30 days. Remove an address and restart to cut it off; restarting also ends every
-  session.
+- Sessions last 30 days and survive restarts (they are kept in `data/sessions.json`, which holds
+  only SHA-256 digests of the tokens, never the tokens themselves). To cut someone off, remove
+  their address and run `make logout-all`; a plain restart no longer signs anyone out. Do the same
+  after changing `MP_ADMIN_PASSWORD`.
 - Pointing `music.haruhi.one` at the tunnel replaces its Tailscale DNS record. Other names, such as
   `animedb.haruhi.one`, are unaffected.
+
+### Closing the home-network side door
+
+With the defaults (`MP_ALLOWED_NETS=tailscale,lan`, `MP_TRUSTED_PROXIES=loopback,lan`, port on
+`0.0.0.0`), any device on your home Wi-Fi reaches the player directly, without going through
+Cloudflare Access, and only the player's sign-in stops it. Worse, because the whole home network
+counts as a trusted proxy, such a device can send its own `CF-Connecting-IP` header and be judged as
+a tunnel visitor. Trust only the address `cloudflared` really arrives from, and drop `lan`:
+
+1. Find the address. `cloudflared` on the host connecting to `http://<host LAN IP>:8787` arrives
+   from that same LAN IP; connecting to `http://localhost:8787` arrives from the Docker network's
+   gateway (`docker inspect masterplayer` shows it). To be sure, run a throwaway listener on the
+   same network and look at what it logs:
+
+   ```
+   docker run --rm -d --name probe --network <project>_default -p 8799:8000 python:3-alpine python -m http.server 8000
+   curl -s http://<the address cloudflared uses>:8799/ >/dev/null; docker logs probe; docker rm -f probe
+   ```
+2. `.env`:
+
+   ```
+   MP_ALLOWED_NETS=tailscale
+   MP_TRUSTED_PROXIES=192.168.1.10
+   ```
+
+   (the single address from step 1, nothing wider). Loopback stays allowed on its own (the container's health check). Then `make up`.
+3. Check: a request from another home-network device, with or without a `CF-Connecting-IP`
+   header, gets 403; the site through the tunnel and direct tailnet access still work.
+
+If the host's LAN address can change (DHCP), give it a reservation on the router: the tunnel's
+service URL depends on it too. Using `http://localhost:8787` as the tunnel's service instead ties
+the trusted address to the Docker gateway, which changes if the network is recreated (`make down`).
 
 ### Cloudflare Access in front (recommended)
 
@@ -235,7 +270,11 @@ Check it from a private window: `music.haruhi.one` should send you to
 `<team>.cloudflareaccess.com`, your email should get a code and then the player's own sign-in, and
 any other email should get no code. From outside, every path (including `/api/...`, `/healthz`
 and `/auth/google/...`) should answer with a redirect to the Access login, never with the player.
-Optionally turn on HSTS under SSL/TLS → Edge Certificates; the player does not send it itself.
+The player sends HSTS itself once it is served over https (`MP_PUBLIC_URL` is https or
+`MP_COOKIE_SECURE=true`), so Cloudflare's own HSTS switch is optional.
+
+Also turn on 2-Step Verification for every account in the Access policy and `MP_ALLOWED_EMAILS`:
+both locks trust those accounts.
 
 ## Search
 
@@ -373,6 +412,29 @@ proxy, allow request bodies of at least 16 MiB.
   table and lock you out.
 - Visitors who are not signed in only learn how to sign in from `/api/session`, not what the
   server can do (upload folder, size limit, installed tools).
+- The server sends HSTS once it is served over https, and keeps sign-ins in
+  `data/sessions.json` as token digests only (`make logout-all` clears them).
+
+### Running it safely
+
+Things the code cannot do for you:
+
+- **This repository is public.** Never commit `.env` (it is in `.gitignore`); it holds the Google
+  client secret and the password. Anyone can read the code and the hostnames in this README, so
+  the locks have to hold with the code known, which is the point of Cloudflare Access in front.
+  If a secret ever lands in a commit, rotate it (new Google client secret, new password): rewriting
+  history does not take back what was already pushed.
+- **Keep `.env` private on the server:** `chmod 600 .env`.
+- **Turn on 2-Step Verification** for every account in the Access policy and `MP_ALLOWED_EMAILS`.
+  Both locks trust those accounts, so whoever holds one of them gets in.
+- **Back up the music.** With delete and upload on (`MP_READ_ONLY=false`), the in-app trash covers
+  a mistaken delete, but a bug or a stolen session could still remove files. Keep a copy of the
+  library, `uploads/` and `data/` (favorites, talk list, settings) somewhere the container cannot
+  write, for example a nightly `rsync` to another disk or machine.
+- **Rebuild regularly.** `make up` (and `make deploy`) builds with `--pull --no-cache`, so the base
+  images, ffmpeg, 7z and the Go toolchain are fetched fresh: they parse uploaded files and serve
+  the internet. Bump the Go image in the `Dockerfile` when a Go release leaves support (each one
+  gets about a year).
 
 ## Development
 

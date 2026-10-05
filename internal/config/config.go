@@ -199,5 +199,8 @@ func (c Config) CacheDir() string { return filepath.Join(c.DataDir, "cache") }
 // StatePath is the JSON file holding favorites, settings and resume state.
 func (c Config) StatePath() string { return filepath.Join(c.DataDir, "state.json") }
 
+// SessionsPath holds the signed-in sessions (token digests only), so a restart keeps them.
+func (c Config) SessionsPath() string { return filepath.Join(c.DataDir, "sessions.json") }
+
 // LogPath is the structured error log.
 func (c Config) LogPath() string { return filepath.Join(c.DataDir, "error.log") }

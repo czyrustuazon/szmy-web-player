@@ -159,6 +159,11 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'")
+		if s.Cfg.CookieSecure {
+			// Served over https: browsers must never fall back to plain http. No includeSubDomains,
+			// since sibling names (animedb.haruhi.one on the tailnet) may be plain http.
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 		default:

@@ -8,7 +8,7 @@ COMPOSE ?= docker compose$(if $(KNOWN_DEVICES), -f docker-compose.yml -f docker-
 SERVICE ?= masterplayer
 
 .DEFAULT_GOAL := help
-.PHONY: help env-check build up dev down restart logs status ps shell clean \
+.PHONY: help env-check build up dev down restart logs status ps shell clean logout-all \
         dirs test cover deploy smoke e2e \
         go-build go-run web-test
 
@@ -23,6 +23,7 @@ help: ## Show this help
 	@echo "  make status   Show container status"
 	@echo "  make shell    Shell into the running container"
 	@echo "  make clean    Stop containers and remove the project image"
+	@echo "  make logout-all  Sign every browser out (sessions survive restarts otherwise)"
 	@echo ""
 	@echo "  make test     Run go vet + go test + the coverage gate in a throwaway container"
 	@echo "  make smoke    Build the image, start it with a fixture library, check login/browse/streaming"
@@ -50,10 +51,10 @@ dirs: env-check ## Create the library, data and uploads folders as your user
 	done
 
 build: env-check dirs ## Build the image from scratch, ignoring the Docker layer cache
-	$(COMPOSE) build --no-cache
+	$(COMPOSE) build --no-cache --pull
 
 up: env-check dirs ## Build from scratch and replace the running container
-	$(COMPOSE) build --no-cache
+	$(COMPOSE) build --no-cache --pull
 	$(COMPOSE) up -d --force-recreate
 
 dev: env-check dirs ## Cached rebuild + always replace the running container (fast iteration)
@@ -75,6 +76,15 @@ status ps: ## Show container status
 shell: ## Open a shell in the running container
 	$(COMPOSE) exec $(SERVICE) sh
 
+# Sessions are kept in DATA_HOST_PATH/sessions.json so restarts do not sign anyone out. Stop
+# first, so a sign-in landing between the delete and the restart cannot write the file back.
+logout-all: env-check ## Sign every browser out: stop, delete the sessions file, start again
+	$(COMPOSE) stop $(SERVICE)
+	@d=$$(grep -E '^DATA_HOST_PATH=' .env | tail -1 | cut -d= -f2-); \
+		rm -f "$${d:-./data}/sessions.json" "$${d:-./data}/sessions.json.tmp" && \
+		echo "Removed $${d:-./data}/sessions.json: everyone has to sign in again."
+	$(COMPOSE) up -d $(SERVICE)
+
 clean: down ## Stop containers and remove the project image
 	-docker image rm masterplayer:latest
 
@@ -84,7 +94,7 @@ clean: down ## Stop containers and remove the project image
 COVER_MIN ?= 100
 
 test: ## Run go vet + go test + coverage gate in a throwaway container
-	docker build --target test --build-arg COVER_MIN=$(COVER_MIN) .
+	docker build --pull --target test --build-arg COVER_MIN=$(COVER_MIN) .
 
 smoke: ## Build the image, start it with a fixture library, check login/browse/streaming
 	sh scripts/smoke.sh
@@ -99,7 +109,7 @@ deploy: ## git pull + test + up (run on the Ubuntu host)
 
 # ── Local development, no Docker ─────────────────────────────────────────
 
-go-build: ## Build bin/masterplayer (needs Go 1.22+)
+go-build: ## Build bin/masterplayer (needs Go 1.27+)
 	go build -trimpath -o bin/masterplayer ./cmd/masterplayer
 
 go-run: go-build ## Run locally against ./music and ./data

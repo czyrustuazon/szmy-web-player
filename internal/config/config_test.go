@@ -135,12 +135,12 @@ func TestLoadErrors(t *testing.T) {
 
 func TestPaths(t *testing.T) {
 	c := Config{DataDir: "/d"}
-	for _, p := range []string{c.CacheDir(), c.StatePath(), c.LogPath()} {
+	for _, p := range []string{c.CacheDir(), c.StatePath(), c.LogPath(), c.SessionsPath()} {
 		if !strings.Contains(p, "d") {
 			t.Fatalf("bad path %q", p)
 		}
 	}
-	if !strings.HasSuffix(c.StatePath(), "state.json") || !strings.HasSuffix(c.LogPath(), "error.log") || !strings.HasSuffix(c.CacheDir(), "cache") {
+	if !strings.HasSuffix(c.StatePath(), "state.json") || !strings.HasSuffix(c.LogPath(), "error.log") || !strings.HasSuffix(c.SessionsPath(), "sessions.json") || !strings.HasSuffix(c.CacheDir(), "cache") {
 		t.Fatal("unexpected file names")
 	}
 }

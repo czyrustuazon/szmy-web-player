@@ -80,6 +80,11 @@ func run(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	if !a.Disabled() { // keep sign-ins across restarts; `make logout-all` clears them
+		if err := a.Persist(cfg.SessionsPath(), log.Printf); err != nil {
+			return fmt.Errorf("sessions file: %w", err)
+		}
+	}
 
 	var tx *transcode.Service
 	if bin, err := exec.LookPath(cfg.VgmstreamBin); err == nil {

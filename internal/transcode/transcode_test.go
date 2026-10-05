@@ -264,10 +264,11 @@ func TestRenderCallerCancelDoesNotAbortDecode(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	close(r.gate)
-	// The decode finishes in the background; the next request is served from cache.
+	// The decode finishes in the background; the next request is served from cache. The deadline
+	// is generous because a loaded build machine can stall the background goroutine.
 	var p string
 	var err error
-	for i := 0; i < 200; i++ {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		p, err = s.Render(context.Background(), src)
 		if err == nil && atomic.LoadInt32(&r.decodes) == 1 {
 			break

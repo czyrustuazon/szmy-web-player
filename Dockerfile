@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build the Go binary (pure Go, no cgo, no third-party modules) ----
-FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags="-s -w" -o /out/masterplayer ./cmd/masterplayer
 
 # `docker build --target test .` runs vet, the Go tests and the coverage gate.
-FROM golang:1.22-bookworm AS test
+FROM golang:1.27-bookworm AS test
 ARG COVER_MIN=100
 WORKDIR /src
 COPY . .

@@ -6,6 +6,10 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
 	"sync"
 	"time"
 )
@@ -40,7 +44,68 @@ type Auth struct {
 	now      func() time.Time
 
 	mu       sync.Mutex
-	sessions map[string]time.Time
+	sessions map[string]time.Time // key(token) -> expiry
+	path     string               // sessions file; "" keeps sessions in memory only (see Persist)
+	logf     func(string, ...any)
+}
+
+// key is how a session is stored, in memory and on disk: a SHA-256 of its token, so a copy of
+// the sessions file holds nothing a browser could present.
+func key(token string) string {
+	s := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(s[:])
+}
+
+// Persist keeps sessions in the file at path, so a restart does not sign everyone out. It loads
+// the sessions already there (dropping expired ones), checks that the file can be written, and
+// from then on saves it after every sign-in and sign-out. Deleting the file while the server is
+// stopped signs everyone out (make logout-all). A damaged file is ignored: everyone signs in
+// again. Failures to save later are reported through logf; the session itself still works until
+// the next restart.
+func (a *Auth) Persist(path string, logf func(string, ...any)) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	loaded := map[string]int64{}
+	if len(data) > 0 && json.Unmarshal(data, &loaded) != nil {
+		logf("sessions file %s is damaged; everyone has to sign in again", path)
+		loaded = map[string]int64{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	for k, exp := range loaded {
+		if t := time.Unix(exp, 0); t.After(now) {
+			a.sessions[k] = t
+		}
+	}
+	a.path, a.logf = path, logf
+	return a.save()
+}
+
+// save writes the sessions file (when there is one), replacing it atomically. Call with mu held.
+func (a *Auth) save() error {
+	if a.path == "" {
+		return nil
+	}
+	out := make(map[string]int64, len(a.sessions))
+	for k, exp := range a.sessions {
+		out[k] = exp.Unix()
+	}
+	data, _ := json.Marshal(out) // a map of strings to numbers always encodes
+	tmp := a.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, a.path)
+}
+
+// saved saves after a change, reporting a failure instead of failing the request. Call with mu held.
+func (a *Auth) saved() {
+	if err := a.save(); err != nil {
+		a.logf("saving sessions: %v", err)
+	}
 }
 
 // New builds an Auth. With disabled=true every request is allowed.
@@ -51,8 +116,12 @@ func New(salt, hash []byte, disabled bool, ttl time.Duration) *Auth {
 // Disabled reports whether authentication is switched off.
 func (a *Auth) Disabled() bool { return a.disabled }
 
-// Check compares a password in constant time.
+// Check compares a password in constant time. Without a stored hash (Google sign-in only) no
+// password matches, and nothing is hashed, so guesses cost the server no CPU.
 func (a *Auth) Check(password string) bool {
+	if a.hash == nil {
+		return false
+	}
 	return subtle.ConstantTimeCompare(Hash(a.salt, password), a.hash) == 1
 }
 
@@ -80,7 +149,8 @@ func (a *Auth) NewSession() (string, bool) {
 			delete(a.sessions, t)
 		}
 	}
-	a.sessions[token] = now.Add(a.ttl)
+	a.sessions[key(token)] = now.Add(a.ttl)
+	a.saved()
 	return token, true
 }
 
@@ -91,12 +161,13 @@ func (a *Auth) Valid(token string) bool {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	exp, ok := a.sessions[token]
+	k := key(token)
+	exp, ok := a.sessions[k]
 	if !ok {
 		return false
 	}
 	if a.now().After(exp) {
-		delete(a.sessions, token)
+		delete(a.sessions, k) // dropped from the file at the next save
 		return false
 	}
 	return true
@@ -106,7 +177,8 @@ func (a *Auth) Valid(token string) bool {
 func (a *Auth) Logout(token string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.sessions, token)
+	delete(a.sessions, key(token))
+	a.saved()
 }
 
 // Limiter slows down password guessing. After max failures from one client within window,
