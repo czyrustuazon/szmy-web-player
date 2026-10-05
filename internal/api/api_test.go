@@ -1,0 +1,694 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"masterplayer/internal/auth"
+	"masterplayer/internal/config"
+	"masterplayer/internal/errlog"
+	"masterplayer/internal/library"
+	"masterplayer/internal/store"
+	"masterplayer/internal/transcode"
+)
+
+// ---------------------------------------------------------------- fixtures
+
+var png = append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{7}, 32)...)
+
+func ssBytes(n int) []byte {
+	return []byte{byte(n>>21) & 0x7f, byte(n>>14) & 0x7f, byte(n>>7) & 0x7f, byte(n) & 0x7f}
+}
+
+func frame(id string, data []byte) []byte {
+	size := make([]byte, 4)
+	binary.BigEndian.PutUint32(size, uint32(len(data)))
+	return append(append(append([]byte(id), size...), 0, 0), data...)
+}
+
+// mp3With builds a tiny MP3 with an ID3v2.3 title and optional cover.
+func mp3With(title string, art []byte) []byte {
+	frames := frame("TIT2", append([]byte{0}, title...))
+	if art != nil {
+		d := append([]byte{0}, "image/png"...)
+		d = append(d, 0, 3, 0)
+		frames = append(frames, frame("APIC", append(d, art...))...)
+	}
+	out := append([]byte{'I', 'D', '3', 3, 0, 0}, ssBytes(len(frames))...)
+	out = append(out, frames...)
+	return append(out, bytes.Repeat([]byte{0xFF, 0xFB, 0x90, 0}, 64)...)
+}
+
+type fakeRunner struct {
+	decodes int32
+	info    transcode.Info
+	fail    bool
+}
+
+func (f *fakeRunner) Metadata(context.Context, string) (transcode.Info, error) {
+	if f.fail {
+		return transcode.Info{}, errors.New("cannot parse")
+	}
+	return f.info, nil
+}
+
+func (f *fakeRunner) Decode(_ context.Context, _, dst string) error {
+	atomic.AddInt32(&f.decodes, 1)
+	if f.fail {
+		return errors.New("cannot decode")
+	}
+	return os.WriteFile(dst, []byte("RIFFfakewavdata"), 0o644)
+}
+
+type env struct {
+	t      *testing.T
+	srv    *Server
+	h      http.Handler
+	root   string
+	runner *fakeRunner
+	logs   *errlog.Logger
+}
+
+func write(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newEnv(t *testing.T, withTX, authOn bool) *env {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "music")
+	write(t, filepath.Join(root, "a.mp3"), mp3With("Song A", png))
+	write(t, filepath.Join(root, "b.mp3"), mp3With("Song B", nil))
+	write(t, filepath.Join(root, "game.brstm"), []byte("RSTM\xFE\xFF"))
+	write(t, filepath.Join(root, "notes.txt"), []byte("hello"))
+	write(t, filepath.Join(root, "sub", "c.mp3"), mp3With("Song C", []byte("<svg onload=alert(1)>")))
+
+	lib, err := library.New(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := t.TempDir()
+	st, err := store.Open(filepath.Join(data, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	salt := []byte("saltsaltsaltsalt")
+	a := auth.New(salt, auth.Hash(salt, "pw"), !authOn, time.Hour)
+	logs := errlog.New(filepath.Join(data, "error.log"), 0, nil)
+
+	e := &env{t: t, root: root, logs: logs, runner: &fakeRunner{info: transcode.Info{
+		SampleRate: 32000, Channels: 2, HasLoop: true, LoopStart: 100, LoopEnd: 900, Title: "Fight",
+	}}}
+	var tx *transcode.Service
+	if withTX {
+		tx, err = transcode.New(e.runner, filepath.Join(data, "cache"), 2, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.srv = New(Deps{
+		Cfg:   config.Config{UploadSubdir: "uploads", MaxUploadMB: 1},
+		Lib:   lib, Store: st, Auth: a, TX: tx, Log: logs,
+		Static: fstest.MapFS{"index.html": {Data: []byte("<h1>app</h1>")}, "sw.js": {Data: []byte("//sw")}},
+	})
+	e.srv.failDelay = 0
+	e.h = e.srv.Handler()
+	return e
+}
+
+func (e *env) do(method, url string, body any, cookie *http.Cookie, mutate ...func(*http.Request)) *httptest.ResponseRecorder {
+	e.t.Helper()
+	var rdr io.Reader
+	if s, ok := body.(string); ok {
+		rdr = strings.NewReader(s)
+	} else if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req := httptest.NewRequest(method, url, rdr)
+	if method != http.MethodGet && method != http.MethodHead {
+		req.Header.Set(csrfHeader, csrfValue)
+	}
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	for _, m := range mutate {
+		m(req)
+	}
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	return rec
+}
+
+func (e *env) login() *http.Cookie {
+	e.t.Helper()
+	rec := e.do("POST", "/api/login", map[string]string{"password": "pw"}, nil)
+	if rec.Code != 200 {
+		e.t.Fatalf("login: %d %s", rec.Code, rec.Body)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == cookieName {
+			return c
+		}
+	}
+	e.t.Fatal("no session cookie")
+	return nil
+}
+
+func decode(t *testing.T, rec *httptest.ResponseRecorder, v any) {
+	t.Helper()
+	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+		t.Fatalf("bad JSON %q: %v", rec.Body, err)
+	}
+}
+
+func wantStatus(t *testing.T, rec *httptest.ResponseRecorder, code int) {
+	t.Helper()
+	if rec.Code != code {
+		t.Fatalf("status %d, want %d; body: %s", rec.Code, code, rec.Body)
+	}
+}
+
+// ---------------------------------------------------------------- tests
+
+func TestHealthStaticAndSecurityHeaders(t *testing.T) {
+	e := newEnv(t, false, true)
+	rec := e.do("GET", "/healthz", nil, nil)
+	wantStatus(t, rec, 200)
+	if rec.Body.String() != "ok" {
+		t.Error("healthz body")
+	}
+	rec = e.do("GET", "/", nil, nil)
+	wantStatus(t, rec, 200)
+	if !strings.Contains(rec.Body.String(), "<h1>app</h1>") || rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("static: %q %v", rec.Body, rec.Header())
+	}
+	h := rec.Header()
+	if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("X-Frame-Options") != "DENY" ||
+		!strings.Contains(h.Get("Content-Security-Policy"), "default-src 'self'") || h.Get("Referrer-Policy") != "no-referrer" {
+		t.Errorf("missing security headers: %v", h)
+	}
+	wantStatus(t, e.do("GET", "/nope.js", nil, nil), 404)
+}
+
+func TestAuthFlowAndCSRF(t *testing.T) {
+	e := newEnv(t, false, true)
+	wantStatus(t, e.do("GET", "/api/browse", nil, nil), 401)
+	wantStatus(t, e.do("GET", "/api/stream?p=a.mp3", nil, nil), 401)
+
+	var sess map[string]any
+	rec := e.do("GET", "/api/session", nil, nil)
+	decode(t, rec, &sess)
+	if sess["authenticated"] != false || sess["authRequired"] != true || sess["canDelete"] != true || sess["vgmstream"] != false {
+		t.Errorf("session: %v", sess)
+	}
+
+	wantStatus(t, e.do("POST", "/api/login", map[string]string{"password": "nope"}, nil), 401)
+	wantStatus(t, e.do("POST", "/api/login", "not json", nil), 400)
+	// CSRF: state-changing requests without the custom header are refused before anything else.
+	rec = e.do("POST", "/api/login", map[string]string{"password": "pw"}, nil, func(r *http.Request) { r.Header.Del(csrfHeader) })
+	wantStatus(t, rec, 403)
+
+	c := e.login()
+	if !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.MaxAge <= 0 {
+		t.Errorf("cookie flags: %+v", c)
+	}
+	wantStatus(t, e.do("GET", "/api/browse", nil, c), 200)
+	rec = e.do("GET", "/api/session", nil, c)
+	decode(t, rec, &sess)
+	if sess["authenticated"] != true {
+		t.Errorf("session after login: %v", sess)
+	}
+	wantStatus(t, e.do("POST", "/api/logout", nil, c, func(r *http.Request) { r.Header.Del(csrfHeader) }), 403)
+	wantStatus(t, e.do("POST", "/api/logout", map[string]string{}, c), 200)
+	wantStatus(t, e.do("GET", "/api/browse", nil, c), 401)
+	// logout without a cookie still needs auth
+	wantStatus(t, e.do("POST", "/api/logout", map[string]string{}, nil), 401)
+}
+
+func TestSecureCookieFlag(t *testing.T) {
+	e := newEnv(t, false, true)
+	e.srv.Cfg.CookieSecure = true
+	if c := e.login(); !c.Secure {
+		t.Error("cookie should be Secure when configured")
+	}
+}
+
+func TestAuthDisabled(t *testing.T) {
+	e := newEnv(t, false, false)
+	wantStatus(t, e.do("GET", "/api/browse", nil, nil), 200)
+	var sess map[string]any
+	decode(t, e.do("GET", "/api/session", nil, nil), &sess)
+	if sess["authRequired"] != false || sess["authenticated"] != true {
+		t.Errorf("session: %v", sess)
+	}
+}
+
+func TestBrowseAndTracks(t *testing.T) {
+	e := newEnv(t, false, false)
+	var br struct {
+		Dir       string     `json:"dir"`
+		Parent    string     `json:"parent"`
+		HasParent bool       `json:"hasParent"`
+		Entries   []entryDTO `json:"entries"`
+	}
+	decode(t, e.do("GET", "/api/browse", nil, nil), &br)
+	var names []string
+	for _, en := range br.Entries {
+		names = append(names, en.Name)
+	}
+	if strings.Join(names, ",") != "sub,a.mp3,b.mp3,game.brstm,notes.txt" || br.HasParent {
+		t.Fatalf("browse: %v %+v", names, br)
+	}
+	if !br.Entries[0].IsDir || !br.Entries[1].Playable || br.Entries[4].Playable {
+		t.Errorf("flags: %+v", br.Entries)
+	}
+
+	decode(t, e.do("GET", "/api/browse?dir=sub", nil, nil), &br)
+	if br.Dir != "sub" || !br.HasParent || br.Parent != "" || len(br.Entries) != 1 || br.Entries[0].Path != "sub/c.mp3" {
+		t.Errorf("sub: %+v", br)
+	}
+	decode(t, e.do("GET", "/api/browse?dir=/sub/", nil, nil), &br)
+	if br.Dir != "sub" {
+		t.Errorf("dir should be normalised: %q", br.Dir)
+	}
+
+	var tr struct {
+		Tracks []entryDTO `json:"tracks"`
+	}
+	decode(t, e.do("GET", "/api/tracks", nil, nil), &tr)
+	var paths []string
+	for _, x := range tr.Tracks {
+		paths = append(paths, x.Path)
+	}
+	if strings.Join(paths, ",") != "sub/c.mp3,a.mp3,b.mp3,game.brstm" {
+		t.Errorf("tracks: %v", paths)
+	}
+
+	wantStatus(t, e.do("GET", "/api/browse?dir=missing", nil, nil), 404)
+	wantStatus(t, e.do("GET", "/api/browse?dir=.trash", nil, nil), 403)
+	wantStatus(t, e.do("GET", "/api/tracks?dir=missing", nil, nil), 404)
+	wantStatus(t, e.do("GET", "/api/browse?dir=a.mp3", nil, nil), 500) // not a directory is an internal error, not a leak
+}
+
+func TestFavorites(t *testing.T) {
+	e := newEnv(t, false, false)
+	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "a.mp3", "on": true}, nil), 200)
+	time.Sleep(5 * time.Millisecond) // favorites are ordered by timestamp; keep them apart on coarse clocks
+	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "sub/c.mp3", "on": true}, nil), 200)
+	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "notes.txt", "on": true}, nil), 415)
+	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "missing.mp3", "on": true}, nil), 404)
+	wantStatus(t, e.do("POST", "/api/favorite", "{bad", nil), 400)
+
+	var fav struct {
+		Tracks []entryDTO `json:"tracks"`
+	}
+	decode(t, e.do("GET", "/api/favorites", nil, nil), &fav)
+	if len(fav.Tracks) != 2 || fav.Tracks[0].Path != "sub/c.mp3" || !fav.Tracks[0].Fav {
+		t.Fatalf("favorites newest first: %+v", fav.Tracks)
+	}
+
+	var br struct {
+		Entries []entryDTO `json:"entries"`
+	}
+	decode(t, e.do("GET", "/api/browse", nil, nil), &br)
+	for _, en := range br.Entries {
+		if en.Name == "a.mp3" && !en.Fav {
+			t.Error("browse should flag favorites")
+		}
+		if en.Name == "b.mp3" && en.Fav {
+			t.Error("b.mp3 is not a favorite")
+		}
+	}
+
+	// Removing works even when the file is gone.
+	if err := os.Remove(filepath.Join(e.root, "a.mp3")); err != nil {
+		t.Fatal(err)
+	}
+	decode(t, e.do("GET", "/api/favorites", nil, nil), &fav)
+	if len(fav.Tracks) != 1 {
+		t.Errorf("missing files are omitted from the list: %+v", fav.Tracks)
+	}
+	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "a.mp3", "on": false}, nil), 200)
+}
+
+func TestMeta(t *testing.T) {
+	e := newEnv(t, true, false)
+	var m metaResp
+	decode(t, e.do("GET", "/api/meta?p=a.mp3", nil, nil), &m)
+	if m.Title != "Song A" || m.Kind != "mp3" || !m.Native || !m.HasArt || m.Loop != nil || m.Path != "a.mp3" {
+		t.Fatalf("mp3 meta: %+v", m)
+	}
+	decode(t, e.do("GET", "/api/meta?p=b.mp3", nil, nil), &m)
+	if m.HasArt || m.Title != "Song B" {
+		t.Fatalf("no-art meta: %+v", m)
+	}
+	decode(t, e.do("GET", "/api/meta?p=game.brstm", nil, nil), &m)
+	if m.Kind != "vgm" || m.Native || m.Title != "Fight" || m.SampleRate != 32000 || m.Loop == nil || m.Loop.Start != 100 || m.Loop.End != 900 || m.Loop.SampleRate != 32000 {
+		t.Fatalf("vgm meta: %+v", m)
+	}
+	wantStatus(t, e.do("GET", "/api/meta?p=notes.txt", nil, nil), 415)
+	wantStatus(t, e.do("GET", "/api/meta?p=missing.mp3", nil, nil), 404)
+	wantStatus(t, e.do("GET", "/api/meta?p=.trash/x", nil, nil), 403)
+	wantStatus(t, e.do("GET", "/api/meta?p=sub", nil, nil), 400)
+
+	e.runner.fail = true
+	e.srv.TX, _ = transcode.New(e.runner, filepath.Join(t.TempDir(), "c"), 1, 0)
+	wantStatus(t, e.do("GET", "/api/meta?p=game.brstm", nil, nil), 422)
+}
+
+func TestMetaVGMWithoutVgmstream(t *testing.T) {
+	e := newEnv(t, false, false)
+	rec := e.do("GET", "/api/meta?p=game.brstm", nil, nil)
+	wantStatus(t, rec, 503)
+	if !strings.Contains(rec.Body.String(), "vgmstream-cli") {
+		t.Errorf("message should say what is missing: %s", rec.Body)
+	}
+	wantStatus(t, e.do("GET", "/api/stream?p=game.brstm", nil, nil), 503)
+	wantStatus(t, e.do("GET", "/api/stream?p=a.mp3&transcode=1", nil, nil), 503)
+}
+
+func TestArt(t *testing.T) {
+	e := newEnv(t, false, false)
+	rec := e.do("GET", "/api/art?p=a.mp3", nil, nil)
+	wantStatus(t, rec, 200)
+	if rec.Header().Get("Content-Type") != "image/png" || !bytes.Equal(rec.Body.Bytes(), png) {
+		t.Errorf("art: %v", rec.Header())
+	}
+	if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "sandbox") {
+		t.Error("art must be served sandboxed")
+	}
+	wantStatus(t, e.do("GET", "/api/art?p=b.mp3", nil, nil), 404)
+	wantStatus(t, e.do("GET", "/api/art?p=sub/c.mp3", nil, nil), 404) // "image" that is really markup is never served
+	wantStatus(t, e.do("GET", "/api/art?p=notes.txt", nil, nil), 415)
+}
+
+func TestStream(t *testing.T) {
+	e := newEnv(t, true, false)
+	want, _ := os.ReadFile(filepath.Join(e.root, "a.mp3"))
+
+	rec := e.do("GET", "/api/stream?p=a.mp3", nil, nil)
+	wantStatus(t, rec, 200)
+	if !bytes.Equal(rec.Body.Bytes(), want) || rec.Header().Get("Content-Type") != "audio/mpeg" {
+		t.Errorf("stream: %v", rec.Header())
+	}
+	rec = e.do("GET", "/api/stream?p=a.mp3", nil, nil, func(r *http.Request) { r.Header.Set("Range", "bytes=2-5") })
+	wantStatus(t, rec, 206)
+	if !bytes.Equal(rec.Body.Bytes(), want[2:6]) || !strings.HasPrefix(rec.Header().Get("Content-Range"), "bytes 2-5/") {
+		t.Errorf("range: %q %v", rec.Body.Bytes(), rec.Header())
+	}
+
+	rec = e.do("GET", "/api/stream?p=game.brstm", nil, nil)
+	wantStatus(t, rec, 200)
+	if rec.Body.String() != "RIFFfakewavdata" || rec.Header().Get("Content-Type") != "audio/wav" {
+		t.Errorf("transcoded: %q %v", rec.Body, rec.Header())
+	}
+	rec = e.do("GET", "/api/stream?p=game.brstm", nil, nil, func(r *http.Request) { r.Header.Set("Range", "bytes=0-3") })
+	wantStatus(t, rec, 206)
+	if rec.Body.String() != "RIFF" {
+		t.Errorf("transcoded range: %q", rec.Body)
+	}
+	if n := atomic.LoadInt32(&e.runner.decodes); n != 1 {
+		t.Errorf("transcode should be cached, decodes=%d", n)
+	}
+	wantStatus(t, e.do("GET", "/api/stream?p=a.mp3&transcode=1", nil, nil), 200)
+	wantStatus(t, e.do("GET", "/api/stream?p=notes.txt", nil, nil), 415)
+	wantStatus(t, e.do("GET", "/api/stream?p=missing.mp3", nil, nil), 404)
+
+	e.runner.fail = true
+	e.srv.TX, _ = transcode.New(e.runner, filepath.Join(t.TempDir(), "c"), 1, 0)
+	wantStatus(t, e.do("GET", "/api/stream?p=game.brstm", nil, nil), 422)
+}
+
+func TestPathTraversalCannotEscape(t *testing.T) {
+	e := newEnv(t, false, false)
+	secret := filepath.Join(filepath.Dir(e.root), "secret.mp3")
+	write(t, secret, mp3With("secret", nil))
+	for _, p := range []string{"../secret.mp3", "..%2Fsecret.mp3", "sub/../../secret.mp3", "/../secret.mp3"} {
+		rec := e.do("GET", "/api/stream?p="+p, nil, nil)
+		if rec.Code == 200 {
+			t.Errorf("%q escaped the library", p)
+		}
+	}
+	wantStatus(t, e.do("GET", "/api/stream?p=.trash/x", nil, nil), 403)
+}
+
+func TestDeleteAndUndo(t *testing.T) {
+	e := newEnv(t, false, false)
+	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "a.mp3", "on": true}, nil), 200)
+
+	rec := e.do("DELETE", "/api/track?p=a.mp3", nil, nil)
+	wantStatus(t, rec, 200)
+	var del map[string]string
+	decode(t, rec, &del)
+	if len(del["token"]) != 16 || del["name"] != "a.mp3" || del["path"] != "a.mp3" {
+		t.Fatalf("delete response: %v", del)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, "a.mp3")); err == nil {
+		t.Fatal("file should be gone")
+	}
+	if e.srv.Store.IsFavorite("a.mp3") {
+		t.Fatal("deleting must drop the favorite")
+	}
+	wantStatus(t, e.do("GET", "/api/meta?p=a.mp3", nil, nil), 404)
+
+	rec = e.do("POST", "/api/undo", map[string]string{"token": del["token"]}, nil)
+	wantStatus(t, rec, 200)
+	var und struct {
+		Path string `json:"path"`
+		Fav  bool   `json:"fav"`
+	}
+	decode(t, rec, &und)
+	if und.Path != "a.mp3" || !und.Fav {
+		t.Fatalf("undo response: %+v", und)
+	}
+	if !e.srv.Store.IsFavorite("a.mp3") {
+		t.Error("undo must restore the favorite")
+	}
+	wantStatus(t, e.do("GET", "/api/meta?p=a.mp3", nil, nil), 200)
+	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": del["token"]}, nil), 400)
+}
+
+func TestDeleteErrorsAndUndoBookkeeping(t *testing.T) {
+	e := newEnv(t, false, false)
+	wantStatus(t, e.do("DELETE", "/api/track?p=missing.mp3", nil, nil), 404)
+	wantStatus(t, e.do("DELETE", "/api/track?p=sub", nil, nil), 400)
+	wantStatus(t, e.do("DELETE", "/api/track?p=.trash/x", nil, nil), 403)
+	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": "../../x"}, nil), 400)
+	wantStatus(t, e.do("POST", "/api/undo", "{", nil), 400)
+	wantStatus(t, e.do("DELETE", "/api/track?p=b.mp3", nil, nil, func(r *http.Request) { r.Header.Del(csrfHeader) }), 403)
+
+	// Old undo records are forgotten, but the file itself stays restorable.
+	now := time.Now()
+	e.srv.now = func() time.Time { return now }
+	rec := e.do("DELETE", "/api/track?p=b.mp3", nil, nil)
+	var del map[string]string
+	decode(t, rec, &del)
+	now = now.Add(2 * time.Hour)
+	e.srv.rememberUndo("0000000000000000", false)
+	e.srv.undoMu.Lock()
+	_, kept := e.srv.undo[del["token"]]
+	e.srv.undoMu.Unlock()
+	if kept {
+		t.Error("expired undo record should be pruned")
+	}
+	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": del["token"]}, nil), 200)
+}
+
+func multipartBody(t *testing.T, files map[string][]byte) (*bytes.Buffer, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("note", "ignored non-file field")
+	for name, data := range files {
+		fw, err := mw.CreateFormFile("files", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fw.Write(data)
+	}
+	mw.Close()
+	return &buf, mw.FormDataContentType()
+}
+
+func TestUpload(t *testing.T) {
+	e := newEnv(t, false, true)
+	c := e.login()
+	body, ct := multipartBody(t, map[string][]byte{
+		"New Song.mp3": mp3With("Uploaded", nil),
+		"readme.txt":   []byte("not audio"),
+	})
+	req := httptest.NewRequest("POST", "/api/upload", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set(csrfHeader, csrfValue)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	wantStatus(t, rec, 200)
+
+	var res struct {
+		Saved    []savedDTO    `json:"saved"`
+		Rejected []rejectedDTO `json:"rejected"`
+	}
+	decode(t, rec, &res)
+	if len(res.Saved) != 1 || res.Saved[0].Path != "uploads/New Song.mp3" || res.Saved[0].Kind != "mp3" {
+		t.Fatalf("saved: %+v", res)
+	}
+	if len(res.Rejected) != 1 || res.Rejected[0].Name != "readme.txt" {
+		t.Fatalf("rejected: %+v", res.Rejected)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, "uploads", "New Song.mp3")); err != nil {
+		t.Fatal("uploaded file missing")
+	}
+	if _, err := os.Stat(filepath.Join(e.root, "uploads", "readme.txt")); err == nil {
+		t.Fatal("non-audio file must not be stored")
+	}
+
+	// Custom target folder.
+	body, ct = multipartBody(t, map[string][]byte{"x.mp3": mp3With("X", nil)})
+	req = httptest.NewRequest("POST", "/api/upload?dir=sub/new", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set(csrfHeader, csrfValue)
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	decode(t, rec, &res)
+	if len(res.Saved) != 1 || res.Saved[0].Path != "sub/new/x.mp3" {
+		t.Fatalf("custom dir: %+v", res)
+	}
+}
+
+func TestUploadRejections(t *testing.T) {
+	e := newEnv(t, false, true)
+	wantStatus(t, e.do("POST", "/api/upload", nil, nil), 401)
+	c := e.login()
+	wantStatus(t, e.do("POST", "/api/upload", "plain body", c), 400) // not multipart
+
+	// Over the size limit (MaxUploadMB is 1 in the test config).
+	big := append(mp3With("big", nil), bytes.Repeat([]byte{1}, 2<<20)...)
+	body, ct := multipartBody(t, map[string][]byte{"big.mp3": big})
+	req := httptest.NewRequest("POST", "/api/upload", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set(csrfHeader, csrfValue)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, req)
+	wantStatus(t, rec, 200)
+	var res struct {
+		Saved    []savedDTO    `json:"saved"`
+		Rejected []rejectedDTO `json:"rejected"`
+	}
+	decode(t, rec, &res)
+	if len(res.Saved) != 0 || len(res.Rejected) == 0 {
+		t.Fatalf("oversized upload must be rejected: %+v", res)
+	}
+	if es, _ := os.ReadDir(filepath.Join(e.root, "uploads")); len(es) != 0 {
+		t.Errorf("rejected upload left files: %v", es)
+	}
+}
+
+func TestSettingsAndResume(t *testing.T) {
+	e := newEnv(t, false, false)
+	var s store.Settings
+	decode(t, e.do("GET", "/api/settings", nil, nil), &s)
+	if s != store.DefaultSettings() {
+		t.Fatalf("defaults: %+v", s)
+	}
+	rec := e.do("PUT", "/api/settings", store.Settings{Shuffle: true, Repeat: "all", Volume: 3, LoopMode: "forever", LoopCount: 4, FadeSeconds: 5, VizMode: "scope"}, nil)
+	wantStatus(t, rec, 200)
+	decode(t, rec, &s)
+	if !s.Shuffle || s.Repeat != "all" || s.Volume != 1 || s.LoopMode != "forever" || s.VizMode != "scope" {
+		t.Fatalf("normalised: %+v", s)
+	}
+	wantStatus(t, e.do("PUT", "/api/settings", "[", nil), 400)
+
+	var r store.Resume
+	decode(t, e.do("GET", "/api/resume", nil, nil), &r)
+	if r.Path != "" {
+		t.Fatalf("empty resume: %+v", r)
+	}
+	wantStatus(t, e.do("PUT", "/api/resume", store.Resume{Path: "/sub//c.mp3", Position: 42.5, Source: "favorites"}, nil), 204)
+	decode(t, e.do("GET", "/api/resume", nil, nil), &r)
+	if r.Path != "sub/c.mp3" || r.Position != 42.5 || r.Source != "favorites" {
+		t.Fatalf("resume: %+v", r)
+	}
+	wantStatus(t, e.do("PUT", "/api/resume", "nope", nil), 400)
+}
+
+func TestErrorLogEndpoint(t *testing.T) {
+	e := newEnv(t, false, false)
+	var out struct {
+		Lines []string `json:"lines"`
+	}
+	decode(t, e.do("GET", "/api/errors", nil, nil), &out)
+	if out.Lines == nil || len(out.Lines) != 0 {
+		t.Fatalf("empty log should be an empty list: %#v", out.Lines)
+	}
+	wantStatus(t, e.do("GET", "/api/meta?p=notes.txt", nil, nil), 415) // logs an "unsupported" entry
+	decode(t, e.do("GET", "/api/errors", nil, nil), &out)
+	if len(out.Lines) != 1 || !strings.Contains(out.Lines[0], "code=1") || !strings.Contains(out.Lines[0], "site=meta") {
+		t.Fatalf("log lines: %v", out.Lines)
+	}
+}
+
+func TestPrefetchWarmsTranscodeCache(t *testing.T) {
+	e := newEnv(t, true, false)
+	wantStatus(t, e.do("POST", "/api/prefetch", map[string]string{"path": "game.brstm"}, nil), 202)
+	wantStatus(t, e.do("POST", "/api/prefetch", map[string]string{"path": "a.mp3"}, nil), 202)    // native: nothing to do
+	wantStatus(t, e.do("POST", "/api/prefetch", map[string]string{"path": "missing"}, nil), 202) // best effort
+	wantStatus(t, e.do("POST", "/api/prefetch", "{", nil), 400)
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&e.runner.decodes) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&e.runner.decodes) != 1 {
+		t.Fatal("prefetch should have started exactly one decode")
+	}
+	e.srv.TX = nil
+	wantStatus(t, e.do("POST", "/api/prefetch", map[string]string{"path": "game.brstm"}, nil), 202)
+}
+
+func TestFailMapsInternalErrorsWithoutLeaking(t *testing.T) {
+	e := newEnv(t, false, false)
+	rec := httptest.NewRecorder()
+	e.srv.fail(rec, errors.New("open /secret/path: boom"), "site", "p")
+	if rec.Code != 500 || strings.Contains(rec.Body.String(), "secret") {
+		t.Errorf("internal errors must be generic: %d %s", rec.Code, rec.Body)
+	}
+	lines, _ := e.logs.Recent(5)
+	if len(lines) != 1 || !strings.Contains(lines[0], "/secret/path") {
+		t.Errorf("details belong in the log: %v", lines)
+	}
+	for err, code := range map[error]int{
+		library.ErrExists: 409, library.ErrTooLarge: 413, library.ErrBadName: 400,
+		library.ErrOutside: 403, library.ErrReadOnly: 403, library.ErrNotAudio: 415,
+	} {
+		rec = httptest.NewRecorder()
+		e.srv.fail(rec, err, "s", "p")
+		if rec.Code != code {
+			t.Errorf("%v: got %d want %d", err, rec.Code, code)
+		}
+	}
+}

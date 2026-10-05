@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111418">
+  <meta name="color-scheme" content="dark light">
+  <title>Master Music Player</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></symbol>
+    <symbol id="i-heart-fill" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></symbol>
+    <symbol id="i-locate" viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0013 3.06V1h-2v2.06A8.994 8.994 0 003.06 11H1v2h2.06A8.994 8.994 0 0011 20.94V23h2v-2.06A8.994 8.994 0 0020.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></symbol>
+    <symbol id="i-spinner" viewBox="0 0 24 24"><path d="M12 4V2A10 10 0 002 12h2a8 8 0 018-8z"/></symbol>
+  </defs>
+</svg>
+
+<section id="login" hidden>
+  <form id="login-form" class="card">
+    <h1>Master Music Player</h1>
+    <label for="login-pw">Password</label>
+    <input id="login-pw" type="password" autocomplete="current-password" required>
+    <p id="login-err" class="err" role="alert"></p>
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+</section>
+
+<div id="app" hidden>
+  <header class="top">
+    <button id="btn-back" class="ib" aria-label="Back" hidden><svg class="ic"><use href="#i-back"/></svg></button>
+    <div class="ttl">
+      <h1 id="title">Library</h1>
+      <div id="crumbs" class="sub"></div>
+    </div>
+    <button id="btn-locate" class="ib" aria-label="Go to playing track"><svg class="ic"><use href="#i-locate"/></svg></button>
+    <button id="btn-upload" class="ib" aria-label="Upload" hidden><svg class="ic"><use href="#i-upload"/></svg></button>
+    <button id="btn-settings" class="ib" aria-label="Settings"><svg class="ic"><use href="#i-settings"/></svg></button>
+  </header>
+
+  <main id="list" class="list"></main>
+  <p id="empty" class="empty" hidden>No favorites yet. Tap the heart on a track.</p>
+
+  <div id="mini" class="mini" hidden>
+    <div id="mp-bar" class="mini-bar"></div>
+    <button id="mini-open" class="mini-open" aria-label="Open player">
+      <img id="mp-art" alt="" width="44" height="44">
+      <span class="mini-text"><span id="mp-title" class="ticker"></span><span id="mp-sub" class="sub"></span></span>
+    </button>
+    <button id="mp-play" class="ib big" aria-label="Play or pause"></button>
+    <button id="mp-next" class="ib" aria-label="Next"><svg class="ic"><use href="#i-next"/></svg></button>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab active" data-source="library"><svg class="ic"><use href="#i-folder"/></svg>Library</button>
+    <button class="tab" data-source="favorites"><svg class="ic"><use href="#i-heart"/></svg>Favorites</button>
+  </nav>
+</div>
+
+<section id="full" class="sheet" hidden aria-label="Now playing">
+  <div id="fp-handle" class="fp-top">
+    <button id="fp-close" class="ib" aria-label="Close player"><svg class="ic"><use href="#i-down"/></svg></button>
+    <span class="grip"></span>
+    <span class="sp"></span>
+  </div>
+  <div class="fp-art">
+    <img id="fp-art" alt="Cover art">
+    <canvas id="fp-canvas" aria-label="Visualizer (tap to switch)"></canvas>
+  </div>
+  <div class="fp-info">
+    <div id="fp-title" class="ticker big-title" role="button" tabindex="0"></div>
+    <div id="fp-artist" class="sub"></div>
+    <div id="fp-meta" class="sub dim"></div>
+    <div id="fp-loop" class="badge" hidden></div>
+  </div>
+  <div class="seekrow">
+    <span id="fp-cur" class="time">0:00</span>
+    <input id="fp-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
+    <span id="fp-dur" class="time">0:00</span>
+  </div>
+  <div class="controls">
+    <button id="fp-shuffle" class="ib" aria-label="Shuffle"><svg class="ic"><use href="#i-shuffle"/></svg></button>
+    <button id="fp-prev" class="ib" aria-label="Previous"><svg class="ic"><use href="#i-prev"/></svg></button>
+    <button id="fp-play" class="ib play" aria-label="Play or pause"></button>
+    <button id="fp-next" class="ib" aria-label="Next"><svg class="ic"><use href="#i-next"/></svg></button>
+    <button id="fp-repeat" class="ib rep" data-mode="off" aria-label="Repeat"><svg class="ic"><use href="#i-repeat"/></svg></button>
+  </div>
+  <div class="controls second">
+    <button id="fp-fav" class="ib fav" aria-label="Favorite"></button>
+    <input id="fp-vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+    <button id="fp-del" class="ib del" aria-label="Delete track"><svg class="ic"><use href="#i-trash"/></svg></button>
+  </div>
+</section>
+
+<section id="settings" class="sheet" hidden aria-label="Settings">
+  <div class="fp-top">
+    <h2>Settings</h2>
+    <span class="sp"></span>
+    <button id="set-close" class="ib" aria-label="Close settings"><svg class="ic"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="form">
+    <label>Looping tracks
+      <select id="set-loop">
+        <option value="count">Loop N times, then fade out</option>
+        <option value="forever">Loop forever</option>
+        <option value="once">Play once (ignore loop)</option>
+      </select>
+    </label>
+    <label>Loop count <input id="set-count" type="number" min="1" max="20" inputmode="numeric"></label>
+    <label>Fade-out seconds <input id="set-fade" type="number" min="0" max="30" inputmode="numeric"></label>
+    <label>Visualizer
+      <select id="set-viz"><option value="bars">Equalizer bars</option><option value="scope">Waveform</option><option value="off">Off</option></select>
+    </label>
+    <label class="check"><input id="set-guard" type="checkbox"> Require a double press for lock-screen next / previous</label>
+    <details><summary>Error log</summary><pre id="errlog"></pre></details>
+    <button id="btn-logout" class="danger">Sign out</button>
+  </div>
+</section>
+
+<input id="file-input" type="file" multiple hidden>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

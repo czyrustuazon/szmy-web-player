@@ -1,0 +1,12 @@
+.git
+.gitignore
+bin
+data
+music
+.env
+.env.example
+coverage.out
+node_modules
+*.log
+README.md
+docker-compose.yml
