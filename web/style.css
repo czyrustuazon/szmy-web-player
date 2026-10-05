@@ -59,6 +59,7 @@ a.btn { display: grid; place-items: center; text-decoration: none; }
 .secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
 .secondary:disabled { opacity: .45; cursor: default; }
 .err { color: var(--danger); min-height: 1.2em; margin: 0; }
+.err:empty { display: none; }
 
 /* ---------------------------------------------------------------- shell */
 #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
