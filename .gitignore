@@ -7,3 +7,8 @@ node_modules/
 *.log
 /uploads/
 .env.bak
+# media-kit: go.work points at a local ../media-kit checkout; web/lib is copied from it (or
+# from the downloaded module) by scripts/sync-media-kit.mjs.
+go.work
+go.work.sum
+/web/lib/

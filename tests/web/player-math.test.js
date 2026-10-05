@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loopPosition, loopRunTime } from '../../web/js/player.js';
-import { bandEdges, step } from '../../web/js/viz.js';
 
 test('loopPosition is linear before the loop end', () => {
   assert.equal(loopPosition(5, 10, 60), 5);
@@ -22,22 +21,4 @@ test('loopRunTime counts the first pass to the loop end plus extra passes', () =
   assert.equal(loopRunTime(40, 10, 60, 2), 70);
   // a count below 1 is treated as 1
   assert.equal(loopRunTime(0, 10, 60, 0), 60);
-});
-
-test('bandEdges are increasing, within range and span 80 Hz..12 kHz', () => {
-  const edges = bandEdges(44100, 1024, 24);
-  assert.equal(edges.length, 25);
-  for (let i = 1; i < edges.length; i++) assert.ok(edges[i] >= edges[i - 1]);
-  assert.ok(edges[0] >= 0 && edges[edges.length - 1] <= 1023);
-  const hz = (bin) => (bin / 1023) * 22050;
-  assert.ok(Math.abs(hz(edges[0]) - 80) < 30);
-  assert.ok(Math.abs(hz(edges[24]) - 12000) < 30);
-});
-
-test('step rises fast, falls smoothly and settles at zero', () => {
-  assert.ok(step(0, 100, 16.7) > 50);
-  const fall = step(100, 0, 16.7);
-  assert.ok(fall > 85 && fall < 95);
-  assert.equal(step(0.5, 0, 16.7), 0);
-  assert.equal(step(100, 95, 16.7), 95); // never undershoots the target
 });

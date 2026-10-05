@@ -5,7 +5,8 @@ features to the browser: it plays normal formats **and** game music (BRSTM, BCST
 ADPCM and anything else [vgmstream](https://github.com/vgmstream/vgmstream) decodes),
 including **sample-accurate loop points**. Phone-first layout, installable as a PWA.
 
-One Go binary (standard library only) with the web app embedded. Runs in Docker.
+One Go binary (standard library only, plus [media-kit](#shared-code-media-kit), which is too) with
+the web app embedded. Runs in Docker.
 
 > **Testing:** `make test` runs `go vet`, `go test` and a 100% coverage gate for `internal/`
 > in a throwaway container; `make smoke` builds the image and checks login, browsing and
@@ -447,8 +448,29 @@ make cover        # the coverage gate on the host (needs Go)
 make deploy       # git pull + test + up, on the Ubuntu host
 ```
 
-Layout: `cmd/masterplayer` (entry point), `internal/{config,sniff,meta,library,transcode,store,auth,errlog,api}`,
+Layout: `cmd/masterplayer` (entry point), `internal/{config,sniff,meta,library,transcode,store,auth,errlog,api,upload}`,
 `web/` (embedded app: plain ES modules, no build step), `tests/web` (Node tests).
+
+### Shared code (media-kit)
+
+The visualizer, the chunked/resumable upload protocol (browser client and Go server), fuzzy
+search and the virtual list live in a separate repo, **media-kit**, so other projects can use
+them too ([lib-szmy-media-kit](https://github.com/czyrustuazon/lib-szmy-media-kit)).
+
+- **Go packages** `resumable` and `unpack` are an ordinary module dependency: `go.mod` names the
+  version and `go.sum` pins its contents. `internal/upload` adds what the music library needs on
+  top: only audio is accepted, archives keep audio plus up to three cover pictures per folder,
+  and what was added is counted as tracks and images.
+- **Browser modules** are served at `/lib/media-kit/` from `web/lib/media-kit/`, which is not
+  committed. Docker builds copy them from the downloaded module, so a build needs network
+  access to GitHub (or the Go module proxy) the first time.
+
+For local work, `make sync-media-kit` (also run by `go-build`, `cover` and `web-test`) uses a
+checkout at `../media-kit` when there is one (pass `MEDIA_KIT=path` otherwise): it writes a
+`go.work` so Go builds against the checkout, and copies its browser modules. Without a checkout
+it copies them from the version in `go.mod` (needs Go). To ship a media-kit change: commit and
+tag it in media-kit (`v0.1.1`), then `go get github.com/czyrustuazon/lib-szmy-media-kit@v0.1.1`
+here and commit `go.mod` and `go.sum`.
 
 ### First-run checklist
 

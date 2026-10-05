@@ -2,7 +2,7 @@
 // them with the chunked, resumable uploader. Archives (.zip / .7z) are unpacked on
 // the server and reduced to their audio files.
 
-import { createUploader, batchSignature } from './uploader.js';
+import { createUploader, batchSignature } from '../lib/media-kit/upload.js';
 import { $, toast, escapeHTML, fmtBytes } from './util.js';
 import { events } from './api.js';
 
@@ -62,7 +62,9 @@ export function summarize(results) {
   return { tracks, bad, text: bad ? `${base}; ${bad} failed` : base };
 }
 
-export function initUploadView({ caps, onUploaded, goLibrary, uploader = createUploader() }) {
+const newUploader = () => createUploader({ headers: { 'X-Requested-With': 'masterplayer' }, storageKey: 'mmp-upload-batch' });
+
+export function initUploadView({ caps, onUploaded, goLibrary, uploader = newUploader() }) {
   const el = {
     drop: $('#up-drop'),
     input: $('#up-input'),

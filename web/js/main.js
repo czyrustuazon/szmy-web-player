@@ -1,8 +1,8 @@
 import { api, events, ApiError } from './api.js';
 import { Player } from './player.js';
 import { Queue } from './queue.js';
-import { Visualizer } from './viz.js';
-import { VirtualList } from './ui.js';
+import { Visualizer, bars, scope } from '../lib/media-kit/viz/index.js';
+import { VirtualList } from '../lib/media-kit/virtual-list.js';
 import { initUploadView } from './uploadview.js';
 import { SearchState, SEP, stemOf, dirOf, highlight } from './searchstate.js';
 import { $, kindLabel, fmtTime, icon, escapeHTML, toast, ask, setMarquee, debounce } from './util.js';
@@ -737,8 +737,7 @@ vol.addEventListener('change', () => vol.blur());
 function ensureViz() {
   if (state.viz) return;
   player.ensureContext(); // the analyser only exists once the audio graph does
-  state.viz = new Visualizer($('#fp-canvas'), player.analyser, player.ctx.sampleRate);
-  state.viz.setMode(state.settings?.vizMode || 'bars');
+  state.viz = new Visualizer($('#fp-canvas'), player.analyser, { modes: [bars(), scope()], mode: state.settings?.vizMode || 'bars' });
 }
 
 function updateViz() {

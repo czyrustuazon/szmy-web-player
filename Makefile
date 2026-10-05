@@ -10,7 +10,7 @@ SERVICE ?= masterplayer
 .DEFAULT_GOAL := help
 .PHONY: help env-check build up dev down restart logs status ps shell clean logout-all \
         dirs test cover deploy smoke e2e \
-        go-build go-run web-test
+        go-build go-run web-test sync-media-kit
 
 help: ## Show this help
 	@echo "masterplayer Docker targets"
@@ -31,6 +31,7 @@ help: ## Show this help
 	@echo "  make deploy   git pull + test + up (run on the Ubuntu host)"
 	@echo ""
 	@echo "Without Docker: make go-build, make go-run, make web-test (Node tests for the browser logic)"
+	@echo "Shared code: make sync-media-kit uses ../media-kit if present, else downloads go.mod's version"
 	@echo ""
 	@echo "First time: cp .env.example .env, then set LIBRARY_HOST_PATH, PUID, PGID and"
 	@echo "(optionally) MP_ADMIN_PASSWORD before 'make up'. Blank password = open access, no login."
@@ -90,7 +91,7 @@ clean: down ## Stop containers and remove the project image
 
 # Runs in the Dockerfile's `test` stage: go vet, go test and the coverage gate
 # (COVER_MIN, default 100 like szmy's mandate — override with `make test COVER_MIN=90`).
-# The module has no third-party dependencies, so there is no module cache volume to maintain.
+# media-kit, the only other module, is downloaded inside the build at the version go.mod names.
 COVER_MIN ?= 100
 
 test: ## Run go vet + go test + coverage gate in a throwaway container
@@ -109,14 +110,19 @@ deploy: ## git pull + test + up (run on the Ubuntu host)
 
 # ── Local development, no Docker ─────────────────────────────────────────
 
-go-build: ## Build bin/masterplayer (needs Go 1.27+)
+go-build: sync-media-kit ## Build bin/masterplayer (needs Go 1.27+)
 	go build -trimpath -o bin/masterplayer ./cmd/masterplayer
 
 go-run: go-build ## Run locally against ./music and ./data
 	MP_MUSIC_DIR=./music MP_DATA_DIR=./data ./bin/masterplayer
 
-cover: ## Coverage gate on the host (needs Go)
+cover: sync-media-kit ## Coverage gate on the host (needs Go)
 	COVER_MIN=$(COVER_MIN) sh scripts/coverage.sh
 
-web-test: ## Node tests for the browser logic (needs Node 20+)
+web-test: sync-media-kit ## Node tests for the browser logic (needs Node 20+)
 	node --test tests/web/*.test.js
+
+MEDIA_KIT ?= ../media-kit
+
+sync-media-kit: ## Use ../media-kit (go.work) or the downloaded version; fill web/lib/ (needs Node)
+	node scripts/sync-media-kit.mjs $(MEDIA_KIT)

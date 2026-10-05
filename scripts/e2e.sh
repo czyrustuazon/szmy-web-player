@@ -60,9 +60,13 @@ until curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; do
   sleep 1
 done
 
+# The upload client under test is media-kit's upload.js exactly as this server serves it.
+mkdir -p "$tmp/lib"
+curl -fsS -o "$tmp/lib/upload.js" "http://127.0.0.1:${PORT}/lib/media-kit/upload.js"
+
 docker run --rm --network host -e E2E_URL="http://127.0.0.1:${PORT}" \
   -v "$tmp/package.json:/e2e/package.json:ro" \
-  -v "$PWD/web/js:/e2e/js:ro" \
+  -v "$tmp/lib:/e2e/lib:ro" \
   -v "$PWD/scripts/e2e-upload.mjs:/e2e/e2e-upload.mjs:ro" \
   -v "$tmp/fixtures:/e2e/fixtures:ro" \
   -v "$tmp/music:/e2e/music:ro" -v "$tmp/uploads:/e2e/music/uploads:ro" \

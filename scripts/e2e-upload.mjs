@@ -1,5 +1,5 @@
 // End-to-end check of chunked, resumable uploads: the real browser upload client
-// (web/js/uploader.js) against a real running server, with real zip and 7z archives.
+// (media-kit's upload.js, as the server serves it) against a real running server, with real zip and 7z archives.
 // Run through scripts/e2e.sh (it builds the image, makes fixtures and calls this).
 //
 // Not covered: the XHR transport the browser uses for chunks (Node has no XMLHttpRequest),
@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { createUploader, UploadError } from './js/uploader.js';
+import { createUploader, UploadError } from './lib/upload.js';
 
 const BASE = process.env.E2E_URL || 'http://127.0.0.1:18199';
 const FIX = '/e2e/fixtures';

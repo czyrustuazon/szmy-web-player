@@ -1,21 +1,30 @@
 # syntax=docker/dockerfile:1
 
-# ---- build the Go binary (pure Go, no cgo, no third-party modules) ----
-FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS build
+# ---- source tree plus media-kit, downloaded at the version go.mod names (go.sum checks it) ----
+# Its Go packages come from the module cache; its browser modules are copied to web/lib, which
+# the binary embeds. A go.work or web/lib from the host is never used (.dockerignore).
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS src
+ENV GOWORK=off
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download \
+    && mkdir -p /media-kit \
+    && cp -R "$(go list -m -f '{{.Dir}}' github.com/czyrustuazon/lib-szmy-media-kit)/js/." /media-kit/ \
+    && chmod -R u+w /media-kit
+COPY . .
+RUN mkdir -p web/lib && cp -R /media-kit web/lib/media-kit
+
+# ---- build the Go binary (pure Go, no cgo) ----
+FROM src AS build
 ARG TARGETOS
 ARG TARGETARCH
-WORKDIR /src
-COPY go.mod ./
-COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w" -o /out/masterplayer ./cmd/masterplayer
 
 # `docker build --target test .` runs vet, the Go tests and the coverage gate.
-FROM golang:1.27-bookworm AS test
+FROM src AS test
 ARG COVER_MIN=100
-WORKDIR /src
-COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go vet ./... && COVER_MIN="${COVER_MIN}" sh scripts/coverage.sh
 

@@ -18,7 +18,8 @@ music player (vgmstream, dr_flac, libopusfile, minimp3). No szmy source code is 
 
 ## Go and browser code
 
-masterplayer has no third-party Go modules and no third-party JavaScript.
+masterplayer has no third-party Go modules and no third-party JavaScript. Its one dependency,
+media-kit (`github.com/czyrustuazon/lib-szmy-media-kit`), is a library by the same author.
 
 The UI icons (inline SVG paths in `web/index.html`) are from Google's Material Design
 Icons, licensed under the Apache License 2.0

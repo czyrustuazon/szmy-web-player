@@ -1,7 +1,7 @@
 // Search state for the track lists: what to search, the cached index, the current hits and
 // how to highlight them. No DOM, so it can be tested on its own.
 
-import { createIndex, searchIndex } from './fuzzy.js';
+import { createIndex, searchIndex } from '../lib/media-kit/fuzzy.js';
 import { escapeHTML } from './util.js';
 
 // The searched text of a track is "file name · folder / path", so artist and album folders
