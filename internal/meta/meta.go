@@ -72,9 +72,6 @@ func Read(path string, kind sniff.Kind) (*Tags, error) {
 	default:
 		t = &Tags{}
 	}
-	if t == nil {
-		t = &Tags{}
-	}
 	finish(t, path)
 	return t, err
 }

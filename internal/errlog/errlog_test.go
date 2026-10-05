@@ -90,6 +90,46 @@ func TestUnwritableLogReportsToEcho(t *testing.T) {
 	}
 }
 
+func TestRotationFailureIsReported(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "e.log")
+	if err := os.WriteFile(p, []byte(strings.Repeat("x", 100)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A non-empty directory in the way makes both Remove and Rename of "e.log.1" fail.
+	if err := os.MkdirAll(filepath.Join(p+".1", "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var echo bytes.Buffer
+	l := New(p, 50, &echo)
+	l.Append(CodeIO, "s", "p", "")
+	if !strings.Contains(echo.String(), "cannot write log file") {
+		t.Fatalf("expected a failure note, got %q", echo.String())
+	}
+}
+
+func TestLogPathThatIsADirectory(t *testing.T) {
+	dir := t.TempDir() // a directory cannot be opened for appending or read as a log
+	var echo bytes.Buffer
+	l := New(dir, 0, &echo)
+	l.Append(CodeIO, "s", "p", "")
+	if !strings.Contains(echo.String(), "cannot write log file") {
+		t.Fatalf("expected a failure note, got %q", echo.String())
+	}
+	if lines, err := l.Recent(5); err == nil || lines != nil {
+		t.Fatalf("reading a directory must fail: %v %v", lines, err)
+	}
+}
+
+func TestRecentOfEmptyFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "e.log")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if lines, err := New(p, 0, nil).Recent(5); lines != nil || err != nil {
+		t.Fatalf("got %v %v", lines, err)
+	}
+}
+
 func TestCodeMessages(t *testing.T) {
 	for _, c := range []Code{CodeUnsupported, CodeDecode, CodeIO, CodeMeta, CodeUpload, CodeTranscode} {
 		if c.Message() == "unknown error" || c.Message() == "" {

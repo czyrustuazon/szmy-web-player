@@ -1,9 +1,9 @@
 #!/bin/sh
 # Coverage gate, in the spirit of szmy's "coverage must not regress" rule.
-# Fails when total statement coverage of ./internal/... is below COVER_MIN (default 85).
+# Fails when total statement coverage of ./internal/... is below COVER_MIN (default 100).
 set -eu
 
-MIN="${COVER_MIN:-85}"
+MIN="${COVER_MIN:-100}"
 go test -covermode=atomic -coverprofile=coverage.out ./internal/...
 
 total=$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%", "", $3); print $3 }')

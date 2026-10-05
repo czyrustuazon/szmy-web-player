@@ -1,6 +1,7 @@
 package store
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -167,6 +168,28 @@ func TestOpenAcceptsPartialAndNullFiles(t *testing.T) {
 	st := s.Settings()
 	if st.Volume != 0.25 || st.Repeat != "off" || st.LoopCount != 2 {
 		t.Fatalf("missing fields should take defaults: %+v", st)
+	}
+}
+
+func TestSaveReportsEncodingAndWriteFailures(t *testing.T) {
+	s, p := open(t)
+	if err := s.SetFavorite("a", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// A value JSON cannot encode (NaN) is reported instead of corrupting the file.
+	s.st.Settings.Volume = math.NaN()
+	if err := s.save(); err == nil {
+		t.Error("NaN volume should fail to encode")
+	}
+	s.st.Settings.Volume = 1
+
+	// A directory squatting on the temp file name makes the write fail.
+	if err := os.Mkdir(p+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetFavorite("b", true); err == nil {
+		t.Error("blocked temp file should fail the save")
 	}
 }
 

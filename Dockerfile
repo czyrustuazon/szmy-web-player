@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
 
 # `docker build --target test .` runs vet, the Go tests and the coverage gate.
 FROM golang:1.22-bookworm AS test
-ARG COVER_MIN=85
+ARG COVER_MIN=100
 WORKDIR /src
 COPY . .
 RUN go vet ./... && COVER_MIN="${COVER_MIN}" sh scripts/coverage.sh

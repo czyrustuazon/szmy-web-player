@@ -67,9 +67,9 @@ clean: down ## Stop containers and remove the project image
 	-docker image rm masterplayer:latest
 
 # Runs in the Dockerfile's `test` stage: go vet, go test and the coverage gate
-# (COVER_MIN, default 85 — override with `make test COVER_MIN=80`). The module has no
-# third-party dependencies, so there is no module cache volume to maintain.
-COVER_MIN ?= 85
+# (COVER_MIN, default 100 like szmy's mandate — override with `make test COVER_MIN=90`).
+# The module has no third-party dependencies, so there is no module cache volume to maintain.
+COVER_MIN ?= 100
 
 test: ## Run go vet + go test + coverage gate in a throwaway container
 	docker build --target test --build-arg COVER_MIN=$(COVER_MIN) .

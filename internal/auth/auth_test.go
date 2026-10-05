@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 )
@@ -89,6 +90,16 @@ func TestSessionExpiry(t *testing.T) {
 	a.mu.Unlock()
 	if stillThere {
 		t.Error("expired session should be swept on login")
+	}
+}
+
+func TestLoginFailsWhenRandomSourceFails(t *testing.T) {
+	a := newAuth(t, "pw")
+	old := randRead
+	randRead = func([]byte) (int, error) { return 0, errors.New("no entropy") }
+	t.Cleanup(func() { randRead = old })
+	if tok, ok := a.Login("pw"); ok || tok != "" {
+		t.Fatalf("a session must not be issued without randomness: %q %v", tok, ok)
 	}
 }
 

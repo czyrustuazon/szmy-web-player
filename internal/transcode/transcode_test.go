@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,6 +130,17 @@ func TestDefaultExecRunsProcesses(t *testing.T) {
 	}
 }
 
+// With no Exec set, VGMStream runs a real subprocess; a missing binary surfaces as an error.
+func TestVGMStreamDefaultsToRealProcess(t *testing.T) {
+	v := VGMStream{Bin: "definitely-not-a-real-binary-xyz"}
+	if _, err := v.Metadata(context.Background(), "x"); err == nil {
+		t.Error("metadata with a missing binary")
+	}
+	if err := v.Decode(context.Background(), "x", "y"); err == nil {
+		t.Error("decode with a missing binary")
+	}
+}
+
 // fakeRunner decodes by writing a small file; optionally blocks to test sharing.
 type fakeRunner struct {
 	decodes  int32
@@ -136,6 +148,7 @@ type fakeRunner struct {
 	gate     chan struct{}
 	failWith error
 	empty    bool
+	blockOut bool // put a directory where the finished render must be moved
 	info     Info
 }
 
@@ -158,6 +171,11 @@ func (f *fakeRunner) Decode(ctx context.Context, src, dst string) error {
 	data := []byte("RIFFfakewav")
 	if f.empty {
 		data = nil
+	}
+	if f.blockOut {
+		if err := os.Mkdir(strings.TrimSuffix(dst, ".part"), 0o755); err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(dst, data, 0o644)
 }
@@ -283,6 +301,25 @@ func TestRenderFailures(t *testing.T) {
 	}
 	if _, err := s2.Render(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("missing source")
+	}
+}
+
+func TestRenderReportsFailureToPublishTheFile(t *testing.T) {
+	skipIfWindows(t)
+	r := &fakeRunner{blockOut: true}
+	s, src := newService(t, r, 0)
+	if _, err := s.Render(context.Background(), src); err == nil {
+		t.Fatal("expected the rename to fail")
+	}
+	if parts, _ := filepath.Glob(filepath.Join(s.cacheDir, "*.part")); len(parts) != 0 {
+		t.Errorf("partial file left behind: %v", parts)
+	}
+}
+
+func skipIfWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on POSIX rename semantics")
 	}
 }
 

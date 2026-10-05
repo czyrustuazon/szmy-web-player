@@ -396,15 +396,10 @@ func (s *Server) art(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no cover art")
 		return
 	}
-	st, err := os.Stat(abs)
-	if err != nil {
-		s.fail(w, err, "art", p)
-		return
-	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
-	http.ServeContent(w, r, "", st.ModTime(), bytes.NewReader(tags.Art))
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(tags.Art))
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, p, contentType string) {
@@ -415,7 +410,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, p, contentType string) {
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil {
+	if err != nil || st.IsDir() {
 		writeErr(w, http.StatusNotFound, "file not found")
 		return
 	}

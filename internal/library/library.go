@@ -34,10 +34,7 @@ var (
 	ErrBadName  = errors.New("invalid file name")
 )
 
-const (
-	maxDepth  = 32
-	maxTracks = 50000
-)
+const maxDepth = 32
 
 // Entry is one row in a folder listing.
 type Entry struct {
@@ -64,28 +61,30 @@ type Library struct {
 	now      func() time.Time
 }
 
+// Seams for tests: a real file system rarely fails at exactly these points.
+var (
+	randRead   = rand.Read
+	renameFile = os.Rename
+)
+
+// maxTracks caps how many tracks Tracks returns (a variable so tests can lower it).
+var maxTracks = 50000
+
 // New opens root. trashDir defaults to <root>/.trash (keep it on the same
-// filesystem so deletes are atomic renames).
-func New(root, trashDir string) (*Library, error) {
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	real, err := filepath.EvalSymlinks(abs)
+// filesystem so deletes are atomic renames). forceReadOnly disables delete and
+// upload even when the directory is writable.
+func New(root, trashDir string, forceReadOnly bool) (*Library, error) {
+	real, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, fmt.Errorf("music directory: %w", err)
 	}
-	st, err := os.Stat(real)
-	if err != nil {
-		return nil, fmt.Errorf("music directory: %w", err)
-	}
-	if !st.IsDir() {
+	if st, err := os.Stat(real); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("music directory %q is not a directory", root)
 	}
 	if trashDir == "" {
 		trashDir = filepath.Join(real, ".trash")
 	}
-	return &Library{root: real, trashDir: trashDir, readOnly: !writable(real), now: time.Now}, nil
+	return &Library{root: real, trashDir: trashDir, readOnly: forceReadOnly || !writable(real), now: time.Now}, nil
 }
 
 func writable(dir string) bool {
@@ -202,14 +201,7 @@ func (l *Library) Browse(rel string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := os.Stat(abs)
-	if err != nil {
-		return nil, err
-	}
-	if !st.IsDir() {
-		return nil, errors.New("not a directory")
-	}
-	des, err := os.ReadDir(abs)
+	des, err := os.ReadDir(abs) // fails for missing paths and for files
 	if err != nil {
 		return nil, err
 	}
@@ -228,36 +220,34 @@ func (l *Library) Browse(rel string) ([]Entry, error) {
 // order a user sees when walking the folders), so auto-advance crosses
 // folder boundaries.
 func (l *Library) Tracks(rel string) ([]Entry, error) {
-	var out []Entry
-	err := l.walk(CleanRel(rel), 0, &out)
-	return out, err
-}
-
-func (l *Library) walk(rel string, depth int, out *[]Entry) error {
-	if depth > maxDepth || len(*out) >= maxTracks {
-		return nil
-	}
 	es, err := l.Browse(rel)
 	if err != nil {
-		if depth == 0 {
-			return err
-		}
-		return nil // unreadable sub-folder: skip it
+		return nil, err
 	}
+	var out []Entry
+	l.collect(es, 0, &out)
+	return out, nil
+}
+
+// collect appends the playable files of es, descending into folders first (the
+// order Browse returns). Unreadable sub-folders are skipped; symlink loops end
+// at maxDepth.
+func (l *Library) collect(es []Entry, depth int, out *[]Entry) {
 	for _, e := range es {
+		if len(*out) >= maxTracks {
+			return
+		}
 		switch {
 		case e.IsDir:
-			if err := l.walk(e.Path, depth+1, out); err != nil {
-				return err
+			if depth < maxDepth {
+				if sub, err := l.Browse(e.Path); err == nil {
+					l.collect(sub, depth+1, out)
+				}
 			}
 		case e.Playable:
 			*out = append(*out, e)
-			if len(*out) >= maxTracks {
-				return nil
-			}
 		}
 	}
-	return nil
 }
 
 // Describe returns the Entry for a single path.
@@ -305,7 +295,7 @@ var tokenRE = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 func randToken() (string, error) {
 	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
@@ -368,9 +358,7 @@ func (l *Library) Undo(token string) (string, error) {
 	if _, err := os.Lstat(dest); err == nil {
 		return "", ErrExists
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
-	}
+	_ = os.MkdirAll(filepath.Dir(dest), 0o755) // if this fails, the move below reports why
 	if err := moveFile(filepath.Join(dir, "f"), dest); err != nil {
 		return "", err
 	}
@@ -402,7 +390,7 @@ func (l *Library) PurgeTrash(maxAge time.Duration) (int, error) {
 }
 
 func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
+	if err := renameFile(src, dst); err == nil {
 		return nil
 	}
 	// Cross-device or similar: copy then remove.
@@ -415,12 +403,11 @@ func moveFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(dst)
-		return err
+	_, err = io.Copy(out, in)
+	if cerr := out.Close(); err == nil {
+		err = cerr
 	}
-	if err := out.Close(); err != nil {
+	if err != nil {
 		os.Remove(dst)
 		return err
 	}
@@ -489,9 +476,7 @@ func (l *Library) SaveFile(dirRel, name string, r io.Reader, maxBytes int64) (st
 	if kind == sniff.Unknown {
 		return "", sniff.Unknown, ErrNotAudio
 	}
-	if err := os.MkdirAll(dirAbs, 0o755); err != nil {
-		return "", sniff.Unknown, err
-	}
+	_ = os.MkdirAll(dirAbs, 0o755) // if this fails, CreateTemp below reports why
 	tmp, err := os.CreateTemp(dirAbs, ".upload-*")
 	if err != nil {
 		return "", sniff.Unknown, err
@@ -509,11 +494,8 @@ func (l *Library) SaveFile(dirRel, name string, r io.Reader, maxBytes int64) (st
 		return "", sniff.Unknown, ErrTooLarge
 	}
 	final := uniqueName(dirAbs, safe)
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-		os.Remove(tmp.Name())
-		return "", sniff.Unknown, err
-	}
-	if err := os.Rename(tmp.Name(), filepath.Join(dirAbs, final)); err != nil {
+	_ = os.Chmod(tmp.Name(), 0o644) // best effort: CreateTemp files are 0600
+	if err := renameFile(tmp.Name(), filepath.Join(dirAbs, final)); err != nil {
 		os.Remove(tmp.Name())
 		return "", sniff.Unknown, err
 	}

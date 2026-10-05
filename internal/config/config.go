@@ -23,6 +23,7 @@ type Config struct {
 	TranscodeWorkers int
 	TrashMinutes     int
 	CookieSecure     bool
+	ReadOnly         bool // force read-only: no delete, no upload
 }
 
 // Load reads configuration through getenv (os.Getenv in production).
@@ -65,6 +66,7 @@ func Load(getenv func(string) string) (Config, error) {
 		TranscodeWorkers: int(num("MP_TRANSCODE_WORKERS", 2)),
 		TrashMinutes:     int(num("MP_TRASH_MINUTES", 10)),
 		CookieSecure:     boolean("MP_COOKIE_SECURE"),
+		ReadOnly:         boolean("MP_READ_ONLY"),
 	}
 	if firstErr != nil {
 		return Config{}, firstErr

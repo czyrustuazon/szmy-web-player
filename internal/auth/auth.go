@@ -12,6 +12,9 @@ import (
 
 const iterations = 100_000
 
+// randRead is a seam so tests can simulate a failing random source.
+var randRead = rand.Read
+
 // NewSalt returns 16 random bytes.
 func NewSalt() ([]byte, error) {
 	b := make([]byte, 16)
@@ -59,7 +62,7 @@ func (a *Auth) Login(password string) (string, bool) {
 		return "", false
 	}
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		return "", false
 	}
 	token := hex.EncodeToString(b)

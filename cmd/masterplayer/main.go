@@ -63,12 +63,12 @@ func run(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	lib, err := library.New(cfg.MusicDir, "")
+	lib, err := library.New(cfg.MusicDir, "", cfg.ReadOnly)
 	if err != nil {
 		return err
 	}
 	if lib.ReadOnly() {
-		fmt.Println("music directory is read-only: delete and upload are disabled")
+		fmt.Println("library is read-only (MP_READ_ONLY or an unwritable music directory): delete and upload are disabled")
 	}
 	a, notice, err := setupAuth(cfg)
 	if err != nil {

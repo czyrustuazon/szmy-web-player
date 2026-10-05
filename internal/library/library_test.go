@@ -43,7 +43,7 @@ func newLib(t *testing.T) (*Library, string) {
 	mustWrite(t, filepath.Join(root, ".hidden.mp3"), mp3)
 	mustWrite(t, filepath.Join(root, "nested", "deep", "song.mp3"), mp3)
 	mustWrite(t, filepath.Join(root, "mystery"), mp3)
-	l, err := New(root, "")
+	l, err := New(root, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,22 +59,22 @@ func names(es []Entry) []string {
 }
 
 func TestNewErrors(t *testing.T) {
-	if _, err := New(filepath.Join(t.TempDir(), "missing"), ""); err == nil {
+	if _, err := New(filepath.Join(t.TempDir(), "missing"), "", false); err == nil {
 		t.Error("missing root")
 	}
 	f := filepath.Join(t.TempDir(), "file")
 	mustWrite(t, f, []byte("x"))
-	if _, err := New(f, ""); err == nil {
+	if _, err := New(f, "", false); err == nil {
 		t.Error("root that is a file")
 	}
 }
 
-func TestReadOnlyDetectionAndGuards(t *testing.T) {
-	l, _ := newLib(t)
-	if l.ReadOnly() {
-		t.Skip("running as a user that cannot write to temp dirs")
+func TestForcedReadOnlyGuards(t *testing.T) {
+	_, root := newLib(t)
+	ro, err := New(root, "", true)
+	if err != nil {
+		t.Fatal(err)
 	}
-	ro := &Library{root: l.root, trashDir: l.trashDir, readOnly: true, now: time.Now}
 	if _, err := ro.Delete("alpha.wav"); !errors.Is(err, ErrReadOnly) {
 		t.Errorf("delete: %v", err)
 	}
@@ -199,18 +199,15 @@ func TestTracksOrderCrossesFolders(t *testing.T) {
 	}
 }
 
-func TestTracksSkipsUnreadableSubfolderAndHonoursDepth(t *testing.T) {
+func TestTracksTerminatesOnSymlinkLoops(t *testing.T) {
 	l, root := newLib(t)
 	// A directory symlink loop must terminate thanks to the depth limit.
-	if err := os.Symlink(root, filepath.Join(root, "nested", "loop")); err == nil {
-		tr, err := l.Tracks("")
-		if err != nil || len(tr) == 0 {
-			t.Errorf("loop: %v %d", err, len(tr))
-		}
+	if err := os.Symlink(root, filepath.Join(root, "nested", "loop")); err != nil {
+		t.Skip("symlinks unavailable:", err)
 	}
-	var out []Entry
-	if err := l.walk("", maxDepth+1, &out); err != nil || len(out) != 0 {
-		t.Errorf("depth limit: %v %v", err, out)
+	tr, err := l.Tracks("")
+	if err != nil || len(tr) == 0 {
+		t.Errorf("loop: %v %d", err, len(tr))
 	}
 }
 

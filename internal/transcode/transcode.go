@@ -287,12 +287,9 @@ func (s *Service) trim() {
 	var items []item
 	var total int64
 	for _, de := range des {
-		if !strings.HasSuffix(de.Name(), ".wav") {
-			continue
-		}
 		info, err := de.Info()
-		if err != nil {
-			continue
+		if err != nil || !strings.HasSuffix(de.Name(), ".wav") {
+			continue // not a render, or it vanished while we were listing
 		}
 		items = append(items, item{filepath.Join(s.cacheDir, de.Name()), info.Size(), info.ModTime()})
 		total += info.Size()

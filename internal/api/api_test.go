@@ -79,6 +79,7 @@ type env struct {
 	srv    *Server
 	h      http.Handler
 	root   string
+	data   string
 	runner *fakeRunner
 	logs   *errlog.Logger
 }
@@ -95,6 +96,11 @@ func write(t *testing.T, path string, data []byte) {
 
 func newEnv(t *testing.T, withTX, authOn bool) *env {
 	t.Helper()
+	return newEnvOpts(t, withTX, authOn, false)
+}
+
+func newEnvOpts(t *testing.T, withTX, authOn, readOnly bool) *env {
+	t.Helper()
 	root := filepath.Join(t.TempDir(), "music")
 	write(t, filepath.Join(root, "a.mp3"), mp3With("Song A", png))
 	write(t, filepath.Join(root, "b.mp3"), mp3With("Song B", nil))
@@ -102,7 +108,7 @@ func newEnv(t *testing.T, withTX, authOn bool) *env {
 	write(t, filepath.Join(root, "notes.txt"), []byte("hello"))
 	write(t, filepath.Join(root, "sub", "c.mp3"), mp3With("Song C", []byte("<svg onload=alert(1)>")))
 
-	lib, err := library.New(root, "")
+	lib, err := library.New(root, "", readOnly)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +121,7 @@ func newEnv(t *testing.T, withTX, authOn bool) *env {
 	a := auth.New(salt, auth.Hash(salt, "pw"), !authOn, time.Hour)
 	logs := errlog.New(filepath.Join(data, "error.log"), 0, nil)
 
-	e := &env{t: t, root: root, logs: logs, runner: &fakeRunner{info: transcode.Info{
+	e := &env{t: t, root: root, data: data, logs: logs, runner: &fakeRunner{info: transcode.Info{
 		SampleRate: 32000, Channels: 2, HasLoop: true, LoopStart: 100, LoopEnd: 900, Title: "Fight",
 	}}}
 	var tx *transcode.Service

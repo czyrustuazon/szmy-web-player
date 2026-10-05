@@ -50,6 +50,7 @@ All settings are environment variables.
 | `MP_MUSIC_DIR` | `./music` (`/music` in Docker) | Library folder |
 | `MP_DATA_DIR` | `./data` (`/data` in Docker) | State file, transcode cache, error log |
 | `MP_ADMIN_PASSWORD` | *(blank)* | Login password. **Blank means open access (no login)**; a warning is logged at startup |
+| `MP_READ_ONLY` | `false` | Force read-only: delete and upload are disabled even if the folder is writable (a folder that is not writable is detected automatically) |
 | `MP_COOKIE_SECURE` | `false` | Mark the session cookie `Secure`; set `true` behind HTTPS |
 | `MP_UPLOAD_SUBDIR` | `uploads` | Folder (inside the library) that uploads go to |
 | `MP_MAX_UPLOAD_MB` | `512` | Per-request and per-file upload limit |
@@ -126,7 +127,7 @@ volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `L` locate
 ## Development
 
 ```sh
-make test         # go vet + go test + coverage gate (COVER_MIN, default 85) in a container
+make test         # go vet + go test + coverage gate (COVER_MIN, default 100) in a container
 make smoke        # build the image, start it, check login/browse/range streaming
 make web-test     # Node tests for the browser logic (needs Node 20+)
 make cover        # the coverage gate on the host (needs Go)
@@ -139,7 +140,8 @@ Layout: `cmd/masterplayer` (entry point), `internal/{config,sniff,meta,library,t
 ### First-run checklist
 
 1. `make test` (go vet, go test and the coverage gate in a container) and fix anything the
-   compiler finds. Lower the gate with `make test COVER_MIN=80` if coverage is just short.
+   compiler finds. Statement coverage of `internal/` is 100% and the gate enforces it, like
+   szmy's mandate; lower it temporarily with `make test COVER_MIN=90` while iterating.
 2. `make dev`, then open the UI (it goes straight to the library when no password is set).
 3. Check vgmstream's flags against your build: the app calls `vgmstream-cli -m FILE` (metadata,
    loop start/end) and `vgmstream-cli -i -o OUT.wav FILE` (decode once, ignoring the loop).
