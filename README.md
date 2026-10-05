@@ -109,11 +109,27 @@ Settings choose what happens at the end of the intro: **loop N times then fade o
 | FTP server with a random readable password | The **Upload** tab (tap or drag and drop), chunked and resumable; password-protected when `MP_ADMIN_PASSWORD` is set |
 | Structured error log (`code msg site path`) | `data/error.log` with rotation, viewable in Settings |
 | Source selector | Library / Favorites tabs |
+| *(new)* | **Fuzzy search** on the Library and Favorites screens (see below) |
 | Konami code | Yes |
 | *(new)* | **Favorites** (heart on every track), keyboard shortcuts, Media Session lock-screen controls, installable PWA |
 
 Keyboard (desktop): `Space` play/pause, `←`/`→` seek 5 s (`Shift` = previous/next), `↑`/`↓`
-volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `L` locate, `Esc` close.
+volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `L` locate, `/` search, `Esc` close.
+
+## Search
+
+The Library and Favorites screens have a search box (press `/` anywhere to jump to it). Results
+update as you type and the matching letters are highlighted. Searching looks at the **file name
+and its folder path**, so artist and album folders match too, and it forgives mistakes:
+
+- every word must match, in any order: `zelda storms` finds "Zelda / Song of Storms";
+- letters in order are enough: `fnlfntsy` finds "Final Fantasy";
+- small typos and swapped letters are fine: `fnial fantsy`, `aeirth`;
+- case and accents are ignored; Japanese and other scripts match as written.
+
+Playing a result queues the results in ranked order. Tags (title, artist) are not searched, because
+reading them for the whole library on every search would be slow; folder and file names carry that
+information for most collections.
 
 ## Uploading
 

@@ -4,6 +4,7 @@ import { Queue } from './queue.js';
 import { Visualizer } from './viz.js';
 import { VirtualList } from './ui.js';
 import { initUploadView } from './uploadview.js';
+import { SearchState, SEP, stemOf, dirOf, highlight } from './searchstate.js';
 import { $, fmtTime, icon, escapeHTML, toast, setMarquee, debounce } from './util.js';
 
 const ROW_H = 60;
@@ -11,6 +12,8 @@ const MAX_SKIPS = 5; // consecutive undecodable tracks before auto-advance gives
 
 const player = new Player();
 const queue = new Queue();
+const search = new SearchState(); // the fuzzy search over the current track list
+let searchToken = 0; // lets a newer keystroke cancel an older search
 
 const state = {
   caps: {},
@@ -53,9 +56,17 @@ function renderRow(e) {
   row.className = `row${current ? ' current' : ''}${!e.isDir && !e.playable ? ' dim' : ''}`;
   let sub = '';
   if (!e.isDir) {
-    sub = state.source === 'favorites' ? e.path.split('/').slice(0, -1).join(' / ') : `${(e.kind || 'file').toUpperCase()} · ${fmtSize(e.size)}`;
+    sub = search.active || state.source === 'favorites' ? dirOf(e.path) : `${(e.kind || 'file').toUpperCase()} · ${fmtSize(e.size)}`;
   }
   const name = e.isDir ? e.name : e.playable ? stem(e.name) : e.name;
+  let nameHTML = escapeHTML(name);
+  let subHTML = escapeHTML(sub);
+  const marks = search.active && !e.isDir ? search.marksFor(e.path) : null;
+  if (marks) {
+    // Show which letters matched, in the file name and in the folder line.
+    nameHTML = highlight(name, marks, 0);
+    subHTML = highlight(sub, marks, stemOf(e.name).length + SEP.length);
+  }
   let actions = '';
   if (e.isDir) {
     actions = icon('chev');
@@ -63,7 +74,7 @@ function renderRow(e) {
     actions = `<button class="ib fav${e.fav ? ' on' : ''}" data-act="fav" aria-label="${e.fav ? 'Remove from favorites' : 'Add to favorites'}">${icon(e.fav ? 'heart-fill' : 'heart')}</button>`;
     if (state.caps.canDelete) actions += `<button class="ib del" data-act="del" aria-label="Delete">${icon('trash')}</button>`;
   }
-  row.innerHTML = `${icon(e.isDir ? 'folder' : 'music')}<div class="rtxt"><div class="rname">${escapeHTML(name)}</div><div class="rsub">${escapeHTML(sub)}</div></div><div class="ractions">${actions}</div>`;
+  row.innerHTML = `${icon(e.isDir ? 'folder' : 'music')}<div class="rtxt"><div class="rname">${nameHTML}</div><div class="rsub">${subHTML}</div></div><div class="ractions">${actions}</div>`;
   return row;
 }
 
@@ -89,8 +100,8 @@ async function loadDir(dir, { keepScroll = false } = {}) {
     state.libLoaded = true;
     state.libStale = false;
     renderHeader();
-    list.setItems(state.entries, { keepScroll });
-    setEmpty(state.view === 'library' && !state.dir && state.entries.length === 0);
+    list.setItems(currentItems(), { keepScroll });
+    updateEmpty();
   } catch (err) {
     toast(err.message);
   }
@@ -100,23 +111,75 @@ async function loadFavorites() {
   try {
     state.favTracks = (await api.favorites()).tracks;
     renderHeader();
-    list.setItems(state.favTracks);
-    setEmpty(state.view === 'favorites' && state.favTracks.length === 0);
+    list.setItems(currentItems());
+    updateEmpty();
   } catch (err) {
     toast(err.message);
   }
 }
 
-// The "nothing here yet" hint over the list.
-function setEmpty(show) {
-  $('#empty').hidden = !show;
+// What the list shows: search results while searching, else the folder or the favorites.
+function currentItems() {
+  if (search.active) return search.items();
+  return state.view === 'favorites' ? state.favTracks : state.entries;
+}
+
+// The "nothing here" hint over the list, worded for the situation.
+function updateEmpty() {
+  const v = state.view;
+  let text = null;
+  if (v === 'library' || v === 'favorites') {
+    if (search.active) {
+      if (!search.hits.length) text = `No matches for “${search.query}”.`;
+    } else if (v === 'favorites' && !state.favTracks.length) {
+      text = 'No favorites yet. Tap the heart on a track.';
+    } else if (v === 'library' && state.libLoaded && !state.dir && !state.entries.length) {
+      text = 'Your library is empty. Use the Upload tab to add music.';
+    }
+  }
+  $('#empty').hidden = text === null;
+  if (text !== null) $('#empty').textContent = text;
+}
+
+// ---- search
+
+// Runs the search box's query over the tracks of the current list (the whole library, or the
+// favorites) and shows the best matches. An empty box shows the normal list again.
+async function applySearch() {
+  const token = ++searchToken;
+  const q = $('#search-input').value;
+  $('#search-clear').hidden = !q;
+  if (!q.trim()) {
+    search.clear();
+  } else {
+    try {
+      const pool = state.view === 'favorites' ? state.favTracks : await ensureLibTracks();
+      if (token !== searchToken) return; // a newer keystroke took over
+      search.run(pool, q);
+    } catch (err) {
+      return void toast(err.message);
+    }
+  }
+  list.setItems(currentItems());
+  renderHeader();
+  updateEmpty();
+}
+
+function clearSearch() {
+  searchToken++;
+  $('#search-input').value = '';
+  $('#search-clear').hidden = true;
+  search.clear();
 }
 
 function renderHeader() {
   const v = state.view;
   let title = { player: 'Now Playing', upload: 'Upload music' }[v] || '';
   let crumbs = '';
-  if (v === 'favorites') {
+  if (search.active && (v === 'favorites' || v === 'library')) {
+    title = v === 'favorites' ? 'Search favorites' : 'Search';
+    crumbs = `${search.hits.length} match${search.hits.length === 1 ? '' : 'es'}`;
+  } else if (v === 'favorites') {
     title = 'Favorites';
     crumbs = `${state.favTracks.length} favorite${state.favTracks.length === 1 ? '' : 's'}`;
   } else if (v === 'library') {
@@ -125,7 +188,7 @@ function renderHeader() {
   }
   $('#title').textContent = title;
   $('#crumbs').textContent = crumbs;
-  $('#btn-back').hidden = v !== 'library' || state.parent === null;
+  $('#btn-back').hidden = v !== 'library' || state.parent === null || search.active;
   $('#btn-locate').hidden = v !== 'library' && v !== 'favorites';
   $('#empty').hidden = true;
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
@@ -144,6 +207,7 @@ async function showView(view) {
   const isList = view === 'library' || view === 'favorites';
   if (isList) state.source = view;
   $('#list').hidden = !isList;
+  $('#searchbar').hidden = !isList;
   $('#view-player').hidden = view !== 'player';
   $('#view-upload').hidden = view !== 'upload';
   syncMini();
@@ -155,13 +219,14 @@ async function showView(view) {
   } else if (view === 'upload') {
     state.uploadView?.show();
   } else if (view === 'favorites') {
-    $('#empty').textContent = 'No favorites yet. Tap the heart on a track.';
     await loadFavorites();
+  } else if (state.libStale || !state.libLoaded) {
+    await loadDir(state.dir);
   } else {
-    $('#empty').textContent = 'Your library is empty. Use the Upload tab to add music.';
-    if (state.libStale || !state.libLoaded) await loadDir(state.dir);
-    else list.refresh();
+    list.setItems(currentItems(), { keepScroll: true });
+    updateEmpty();
   }
+  if (isList && search.active) await applySearch(); // the pool differs between library and favorites
 }
 
 // Called after an upload: the library on disk changed.
@@ -186,9 +251,10 @@ async function ensureLibTracks() {
 
 async function playEntry(e) {
   try {
-    const tracks = state.source === 'favorites' ? state.favTracks : await ensureLibTracks();
+    // Playing from search results queues the results, in ranked order.
+    const tracks = search.active ? search.items() : state.source === 'favorites' ? state.favTracks : await ensureLibTracks();
     let idx = tracks.findIndex((t) => t.path === e.path);
-    if (idx < 0 && state.source === 'library') {
+    if (idx < 0 && state.source === 'library' && !search.active) {
       state.libTracks = null;
       const fresh = await ensureLibTracks();
       idx = fresh.findIndex((t) => t.path === e.path);
@@ -300,9 +366,10 @@ async function toggleFav(e) {
   renderFavButton();
   if (state.source === 'favorites' && !on) {
     state.favTracks = state.favTracks.filter((t) => t.path !== e.path);
+    search.remove(e.path);
     renderHeader();
-    list.setItems(state.favTracks, { keepScroll: true });
-    setEmpty(state.favTracks.length === 0);
+    list.setItems(currentItems(), { keepScroll: true });
+    updateEmpty();
   } else {
     list.refresh();
   }
@@ -328,8 +395,9 @@ async function deleteTrack(e) {
   state.entries = drop(state.entries);
   state.favTracks = drop(state.favTracks);
   if (state.libTracks) state.libTracks = drop(state.libTracks);
-  list.setItems(state.source === 'favorites' ? state.favTracks : state.entries, { keepScroll: true });
-  setEmpty(state.view === 'favorites' && state.favTracks.length === 0);
+  search.remove(e.path);
+  list.setItems(currentItems(), { keepScroll: true });
+  updateEmpty();
   renderHeader();
 
   const r = queue.remove(e.path);
@@ -467,6 +535,7 @@ $('#mini-open').addEventListener('click', () => showView('player'));
 async function locateCurrent() {
   const t = queue.current();
   if (!t) return;
+  clearSearch(); // the track must be visible in its own list, not filtered out of it
   await showView(state.source);
   if (state.source === 'favorites') {
     const i = state.favTracks.findIndex((x) => x.path === t.path);
@@ -481,6 +550,30 @@ async function locateCurrent() {
 
 $('#fp-title').addEventListener('click', () => state.meta && locateCurrent());
 $('#btn-locate').addEventListener('click', locateCurrent);
+
+// The search box: results update as you type (a short pause after each keystroke).
+const applySearchSoon = debounce(applySearch, 120);
+$('#search-input').addEventListener('input', () => {
+  $('#search-clear').hidden = !$('#search-input').value;
+  applySearchSoon();
+});
+$('#search-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') e.target.blur(); // closes the on-screen keyboard
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    if ($('#search-input').value) {
+      clearSearch();
+      applySearch();
+    } else {
+      e.target.blur();
+    }
+  }
+});
+$('#search-clear').addEventListener('click', () => {
+  clearSearch();
+  applySearch();
+  $('#search-input').focus();
+});
 
 // ------------------------------------------------------------------ buttons
 
@@ -718,6 +811,10 @@ document.addEventListener('keydown', (e) => {
       break;
     case 'l':
       locateCurrent();
+      break;
+    case '/':
+      e.preventDefault(); // jump to the search box, on the library unless you are in favorites
+      showView(state.view === 'favorites' ? 'favorites' : 'library').then(() => $('#search-input').focus());
       break;
     case 'Escape':
       $('#settings').hidden = true;
