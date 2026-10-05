@@ -17,7 +17,7 @@ help: ## Show this help
 	@echo "  make dev      Fast cached rebuild + restart, for quick iteration"
 	@echo "  make down     Stop containers"
 	@echo "  make restart  Restart the container"
-	@echo "  make logs     Follow logs (the generated password is printed here on first run)"
+	@echo "  make logs     Follow logs"
 	@echo "  make status   Show container status"
 	@echo "  make shell    Shell into the running container"
 	@echo "  make clean    Stop containers and remove the project image"
@@ -29,7 +29,7 @@ help: ## Show this help
 	@echo "Without Docker: make go-build, make go-run, make web-test (Node tests for the browser logic)"
 	@echo ""
 	@echo "First time: cp .env.example .env, then set LIBRARY_HOST_PATH, PUID, PGID and"
-	@echo "(optionally) MP_ADMIN_PASSWORD before 'make up'."
+	@echo "(optionally) MP_ADMIN_PASSWORD before 'make up'. Blank password = open access, no login."
 
 env-check: ## Fail fast with a clear message if .env is missing
 	@if [ ! -f .env ]; then \

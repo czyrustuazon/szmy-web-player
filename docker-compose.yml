@@ -9,6 +9,7 @@ services:
     environment:
       PUID: "${PUID:-1000}"
       PGID: "${PGID:-1000}"
+      # Blank = open access (no login). Set a value to require sign-in.
       MP_ADMIN_PASSWORD: "${MP_ADMIN_PASSWORD:-}"
       MP_COOKIE_SECURE: "${MP_COOKIE_SECURE:-false}"
       MP_MAX_UPLOAD_MB: "${MP_MAX_UPLOAD_MB:-512}"

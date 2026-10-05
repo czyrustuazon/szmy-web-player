@@ -730,6 +730,7 @@ async function startApp() {
   if (state.started) return reloadView();
   state.started = true;
   $('#btn-upload').hidden = !state.caps.canUpload;
+  $('#btn-logout').hidden = !state.caps.authRequired; // nothing to sign out of in open-access mode
   applySettings(await api.getSettings());
   await showSource('library');
   await restoreResume();

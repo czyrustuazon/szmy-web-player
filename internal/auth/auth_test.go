@@ -2,7 +2,6 @@ package auth
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 	"time"
 )
@@ -37,28 +36,6 @@ func TestNewSaltIsRandom(t *testing.T) {
 	b, _ := NewSalt()
 	if len(a) != 16 || bytes.Equal(a, b) {
 		t.Fatal("salts should be 16 random bytes")
-	}
-}
-
-func TestGeneratePassword(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 20; i++ {
-		pw, err := GeneratePassword(10)
-		if err != nil || len(pw) != 10 {
-			t.Fatalf("%q %v", pw, err)
-		}
-		for _, c := range pw {
-			if !strings.ContainsRune(readable, c) {
-				t.Fatalf("character %q outside the readable alphabet", c)
-			}
-		}
-		seen[pw] = true
-	}
-	if len(seen) < 19 {
-		t.Error("passwords are not random")
-	}
-	if strings.ContainsAny(readable, "0O1lI") {
-		t.Error("alphabet must avoid look-alike characters")
 	}
 }
 

@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"net/http"
@@ -71,7 +70,7 @@ func run(cfg config.Config) error {
 	if lib.ReadOnly() {
 		fmt.Println("music directory is read-only: delete and upload are disabled")
 	}
-	a, notice, err := setupAuth(cfg, st)
+	a, notice, err := setupAuth(cfg)
 	if err != nil {
 		return err
 	}
@@ -132,39 +131,16 @@ func purgeLoop(ctx context.Context, lib *library.Library, maxAge time.Duration, 
 
 const sessionTTL = 30 * 24 * time.Hour
 
-// setupAuth picks the password source: disabled, MP_ADMIN_PASSWORD, a stored
-// hash, or a freshly generated password that is printed once.
-func setupAuth(cfg config.Config, st *store.Store) (*auth.Auth, string, error) {
+// setupAuth turns the login on when MP_ADMIN_PASSWORD is set. With a blank
+// password there is no login at all (open access) and a warning is returned.
+func setupAuth(cfg config.Config) (*auth.Auth, string, error) {
 	if cfg.AuthDisabled {
-		return auth.New(nil, nil, true, sessionTTL), "authentication is DISABLED (MP_AUTH_DISABLED)", nil
-	}
-	if cfg.AdminPassword != "" {
-		salt, err := auth.NewSalt()
-		if err != nil {
-			return nil, "", err
-		}
-		return auth.New(salt, auth.Hash(salt, cfg.AdminPassword), false, sessionTTL), "", nil
-	}
-	saltHex, hashHex := st.Password()
-	if saltHex != "" && hashHex != "" {
-		salt, err1 := hex.DecodeString(saltHex)
-		hash, err2 := hex.DecodeString(hashHex)
-		if err1 == nil && err2 == nil {
-			return auth.New(salt, hash, false, sessionTTL), "", nil
-		}
-	}
-	pw, err := auth.GeneratePassword(10)
-	if err != nil {
-		return nil, "", err
+		return auth.New(nil, nil, true, sessionTTL),
+			"WARNING: MP_ADMIN_PASSWORD is blank, so there is NO LOGIN: anyone who can reach this port can play, upload and delete. Set a password to turn the login on.", nil
 	}
 	salt, err := auth.NewSalt()
 	if err != nil {
 		return nil, "", err
 	}
-	hash := auth.Hash(salt, pw)
-	if err := st.SetPassword(hex.EncodeToString(salt), hex.EncodeToString(hash)); err != nil {
-		return nil, "", err
-	}
-	return auth.New(salt, hash, false, sessionTTL),
-		fmt.Sprintf("generated login password (shown once; set MP_ADMIN_PASSWORD to choose your own): %s", pw), nil
+	return auth.New(salt, auth.Hash(salt, cfg.AdminPassword), false, sessionTTL), "", nil
 }

@@ -19,11 +19,16 @@ One Go binary (standard library only) with the web app embedded. Runs in Docker.
 ```sh
 cp .env.example .env        # set LIBRARY_HOST_PATH, PUID and PGID (`id -u`, `id -g`)
 make up                     # build from scratch and start
-make logs                   # prints a generated password once on first run
+make logs                   # follow the logs
 ```
 
-Open <http://localhost:8787> (change the host port with `PORT` in `.env`). Set
-`MP_ADMIN_PASSWORD` in `.env` to choose your own password instead. `make help` lists every target (`dev` for fast rebuilds, `down`, `restart`, `shell`,
+Open <http://localhost:8787> (change the host port with `PORT` in `.env`).
+
+**No password, no login:** with `MP_ADMIN_PASSWORD` blank (the default), anyone who can reach
+the port can play, upload and delete. That is fine on a private network; set a password in
+`.env` to turn the login on.
+
+`make help` lists every target (`dev` for fast rebuilds, `down`, `restart`, `shell`,
 `status`, `clean`, `test`, `smoke`, `deploy`).
 
 ### Without Docker
@@ -44,8 +49,7 @@ All settings are environment variables.
 | `MP_PORT` | `8080` | HTTP port |
 | `MP_MUSIC_DIR` | `./music` (`/music` in Docker) | Library folder |
 | `MP_DATA_DIR` | `./data` (`/data` in Docker) | State file, transcode cache, error log |
-| `MP_ADMIN_PASSWORD` | *(generated)* | Login password. If empty, a random one is generated, hashed into `state.json` and printed once |
-| `MP_AUTH_DISABLED` | `false` | Turn the login off (only on a trusted network) |
+| `MP_ADMIN_PASSWORD` | *(blank)* | Login password. **Blank means open access (no login)**; a warning is logged at startup |
 | `MP_COOKIE_SECURE` | `false` | Mark the session cookie `Secure`; set `true` behind HTTPS |
 | `MP_UPLOAD_SUBDIR` | `uploads` | Folder (inside the library) that uploads go to |
 | `MP_MAX_UPLOAD_MB` | `512` | Per-request and per-file upload limit |
@@ -97,7 +101,7 @@ Settings choose what happens at the end of the intro: **loop N times then fade o
 | Toasts | Same |
 | Keeps the console awake while playing | Screen Wake Lock |
 | L/R double-tap guard against pocket presses | Optional double-press guard for lock-screen next/previous |
-| FTP server with a random readable password | Authenticated upload (button or drag and drop); generated readable password |
+| FTP server with a random readable password | Upload (button or drag and drop); password-protected when `MP_ADMIN_PASSWORD` is set |
 | Structured error log (`code msg site path`) | `data/error.log` with rotation, viewable in Settings |
 | Source selector | Library / Favorites tabs |
 | Konami code | Yes |
@@ -108,8 +112,9 @@ volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `L` locate
 
 ## Security notes
 
-- Every request needs the session cookie (`HttpOnly`, `SameSite=Strict`); state-changing
-  requests also need an `X-Requested-With` header, which cross-site forms cannot send.
+- With a password set, every request needs the session cookie (`HttpOnly`,
+  `SameSite=Strict`). With none, access is open. In both modes state-changing requests need
+  an `X-Requested-With` header, which cross-site forms cannot send.
 - All paths are resolved against the library root; `..`, hidden folders and symlinks that
   leave the library are refused.
 - Uploads are content-checked (must sniff as audio), size-limited, sanitised and never
@@ -135,7 +140,7 @@ Layout: `cmd/masterplayer` (entry point), `internal/{config,sniff,meta,library,t
 
 1. `make test` (go vet, go test and the coverage gate in a container) and fix anything the
    compiler finds. Lower the gate with `make test COVER_MIN=80` if coverage is just short.
-2. `make dev`, then open the UI and sign in with the password from `make logs`.
+2. `make dev`, then open the UI (it goes straight to the library when no password is set).
 3. Check vgmstream's flags against your build: the app calls `vgmstream-cli -m FILE` (metadata,
    loop start/end) and `vgmstream-cli -i -o OUT.wav FILE` (decode once, ignoring the loop).
    Parsing is in `internal/transcode/transcode.go` (`ParseMetadata`).

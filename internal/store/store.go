@@ -89,8 +89,6 @@ type state struct {
 	Favorites map[string]int64 `json:"favorites"`
 	Settings  Settings         `json:"settings"`
 	Resume    Resume           `json:"resume"`
-	PassSalt  string           `json:"passSalt,omitempty"`
-	PassHash  string           `json:"passHash,omitempty"`
 }
 
 // Store is safe for concurrent use.
@@ -211,20 +209,5 @@ func (s *Store) SetResume(r Resume) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.st.Resume = r
-	return s.save()
-}
-
-// Password returns the stored salt and hash (hex), empty if none.
-func (s *Store) Password() (salt, hash string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.st.PassSalt, s.st.PassHash
-}
-
-// SetPassword stores the salt and hash (hex).
-func (s *Store) SetPassword(salt, hash string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.st.PassSalt, s.st.PassHash = salt, hash
 	return s.save()
 }

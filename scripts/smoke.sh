@@ -44,6 +44,21 @@ code=$(curl -s -b "$tmp/cookies" -H 'Range: bytes=0-3' -o /dev/null -w '%{http_c
 [ "$code" = "206" ] || { echo "expected 206 for a range request, got $code"; exit 1; }
 echo "range streaming ok"
 
+# Blank password means open access: no login needed.
+OPEN_PORT=$((PORT + 1))
+ocid=$(docker run -d -p "${OPEN_PORT}:8080" -e PUID="$(id -u)" -e PGID="$(id -g)" \
+  -v "$tmp/music:/music" -v "$tmp/data-open:/data" "$IMG")
+trap 'docker rm -f "$cid" "$ocid" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
+i=0
+until curl -fsS "http://127.0.0.1:${OPEN_PORT}/healthz" >/dev/null 2>&1; do
+  i=$((i + 1))
+  [ "$i" -gt 30 ] && { echo "open-access server did not become healthy"; docker logs "$ocid"; exit 1; }
+  sleep 1
+done
+curl -fsS "http://127.0.0.1:${OPEN_PORT}/api/browse" | grep -q 'test.mp3'
+docker logs "$ocid" 2>&1 | grep -q 'NO LOGIN'
+echo "open access (blank password) ok"
+
 if [ "$(docker inspect -f '{{.Architecture}}' "$IMG")" = "amd64" ]; then
   docker run --rm --entrypoint vgmstream-cli "$IMG" -h >/dev/null 2>&1 || true
   docker run --rm --entrypoint sh "$IMG" -c 'test -x /usr/local/bin/vgmstream-cli'

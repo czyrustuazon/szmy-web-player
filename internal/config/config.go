@@ -16,7 +16,7 @@ type Config struct {
 	DataDir          string
 	UploadSubdir     string // relative to MusicDir, slash separated
 	AdminPassword    string
-	AuthDisabled     bool
+	AuthDisabled     bool // derived: true when AdminPassword is blank
 	MaxUploadMB      int64
 	CacheMB          int64
 	VgmstreamBin     string
@@ -59,8 +59,7 @@ func Load(getenv func(string) string) (Config, error) {
 		DataDir:          str("MP_DATA_DIR", "./data"),
 		UploadSubdir:     str("MP_UPLOAD_SUBDIR", "uploads"),
 		AdminPassword:    getenv("MP_ADMIN_PASSWORD"),
-		AuthDisabled:     boolean("MP_AUTH_DISABLED"),
-		MaxUploadMB:      num("MP_MAX_UPLOAD_MB", 512),
+		MaxUploadMB:     num("MP_MAX_UPLOAD_MB", 512),
 		CacheMB:          num("MP_CACHE_MB", 2048),
 		VgmstreamBin:     str("MP_VGMSTREAM_BIN", "vgmstream-cli"),
 		TranscodeWorkers: int(num("MP_TRANSCODE_WORKERS", 2)),
@@ -70,6 +69,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if firstErr != nil {
 		return Config{}, firstErr
 	}
+	// A blank (or whitespace-only) password means open access: no login at all.
+	c.AuthDisabled = strings.TrimSpace(c.AdminPassword) == ""
 
 	if c.Port < 1 || c.Port > 65535 {
 		return Config{}, fmt.Errorf("MP_PORT: %d is out of range", c.Port)

@@ -6,15 +6,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"math/big"
 	"sync"
 	"time"
 )
 
 const iterations = 100_000
-
-// readable avoids look-alike characters (0/O, 1/l/I), like szmy's FTP password.
-const readable = "abcdefghjkmnpqrstuvwxyz23456789"
 
 // NewSalt returns 16 random bytes.
 func NewSalt() ([]byte, error) {
@@ -30,20 +26,6 @@ func Hash(salt []byte, password string) []byte {
 		h = sha256.Sum256(h[:])
 	}
 	return h[:]
-}
-
-// GeneratePassword returns n random characters from a readable alphabet.
-func GeneratePassword(n int) (string, error) {
-	out := make([]byte, n)
-	max := big.NewInt(int64(len(readable)))
-	for i := range out {
-		v, err := rand.Int(rand.Reader, max)
-		if err != nil {
-			return "", err
-		}
-		out[i] = readable[v.Int64()]
-	}
-	return string(out), nil
 }
 
 // Auth validates passwords and tracks sessions.

@@ -20,8 +20,21 @@ func TestLoadDefaults(t *testing.T) {
 	if c.MaxUploadMB != 512 || c.TranscodeWorkers != 2 || c.TrashMinutes != 10 || c.VgmstreamBin != "vgmstream-cli" {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
-	if c.AuthDisabled || c.CookieSecure || c.AdminPassword != "" {
-		t.Fatalf("flags should default to off: %+v", c)
+	if !c.AuthDisabled || c.CookieSecure || c.AdminPassword != "" {
+		t.Fatalf("no password set must mean open access: %+v", c)
+	}
+}
+
+func TestBlankPasswordMeansOpenAccess(t *testing.T) {
+	for _, pw := range []string{"", " ", "\t \n"} {
+		c, err := Load(env(map[string]string{"MP_ADMIN_PASSWORD": pw}))
+		if err != nil || !c.AuthDisabled {
+			t.Errorf("password %q: auth should be disabled, got %+v %v", pw, c, err)
+		}
+	}
+	c, err := Load(env(map[string]string{"MP_ADMIN_PASSWORD": "hunter2"}))
+	if err != nil || c.AuthDisabled {
+		t.Errorf("a password must turn authentication on: %+v %v", c, err)
 	}
 }
 
@@ -29,14 +42,14 @@ func TestLoadOverrides(t *testing.T) {
 	c, err := Load(env(map[string]string{
 		"MP_PORT": "9000", "MP_MUSIC_DIR": "/music", "MP_DATA_DIR": "/data",
 		"MP_UPLOAD_SUBDIR": "inbox/new", "MP_ADMIN_PASSWORD": " keep spaces ",
-		"MP_AUTH_DISABLED": "TRUE", "MP_COOKIE_SECURE": "1", "MP_MAX_UPLOAD_MB": "10",
+		"MP_COOKIE_SECURE": "1", "MP_MAX_UPLOAD_MB": "10",
 		"MP_TRANSCODE_WORKERS": "4", "MP_TRASH_MINUTES": "3", "MP_CACHE_MB": "100",
 		"MP_VGMSTREAM_BIN": "/opt/vgm/vgmstream-cli",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Port != 9000 || c.UploadSubdir != "inbox/new" || !c.AuthDisabled || !c.CookieSecure {
+	if c.Port != 9000 || c.UploadSubdir != "inbox/new" || c.AuthDisabled || !c.CookieSecure {
 		t.Fatalf("overrides not applied: %+v", c)
 	}
 	if c.AdminPassword != " keep spaces " {

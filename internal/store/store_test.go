@@ -25,9 +25,6 @@ func TestDefaultsOnFreshStore(t *testing.T) {
 	if len(s.Favorites()) != 0 || s.Resume() != (Resume{}) {
 		t.Fatal("fresh store should be empty")
 	}
-	if salt, hash := s.Password(); salt != "" || hash != "" {
-		t.Fatal("no password yet")
-	}
 }
 
 func TestFavoritesPersistAndOrder(t *testing.T) {
@@ -134,14 +131,13 @@ func TestResume(t *testing.T) {
 	}
 }
 
-func TestPassword(t *testing.T) {
-	s, p := open(t)
-	if err := s.SetPassword("abcd", "ef01"); err != nil {
-		t.Fatal(err)
-	}
-	again, _ := Open(p)
-	if salt, hash := again.Password(); salt != "abcd" || hash != "ef01" {
-		t.Fatalf("%q %q", salt, hash)
+// state.json files written by earlier versions may still hold a password hash; it is ignored.
+func TestOpenIgnoresLegacyPasswordFields(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	_ = os.WriteFile(p, []byte(`{"passSalt":"ab","passHash":"cd","favorites":{"a.mp3":1}}`), 0o644)
+	s, err := Open(p)
+	if err != nil || !s.IsFavorite("a.mp3") {
+		t.Fatalf("legacy file should load: %v", err)
 	}
 }
 
