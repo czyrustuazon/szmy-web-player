@@ -155,3 +155,10 @@ test('renameUnder re-points queued tracks and ignores look-alike prefixes', () =
   q.renameUnder('a', 'c');
   assert.deepEqual(q.items.map((t) => t.path), ['c/1', 'ab/1']);
 });
+
+test('remap re-points moved tracks, only those that moved', () => {
+  const q = new Queue();
+  q.setQueue([{ path: 'a/1.mp3' }, { path: 'a/2.mp3' }, { path: 'b/3.mp3' }, { path: 'toString' }], 0);
+  q.remap({ 'a/1.mp3': 'b/1.mp3', 'a/2.mp3': 'b/2 (2).mp3' });
+  assert.deepEqual(q.items.map((t) => t.path), ['b/1.mp3', 'b/2 (2).mp3', 'b/3.mp3', 'toString']);
+});

@@ -403,12 +403,13 @@ async function toggleFav(e) {
 }
 
 async function renameFolder(e) {
-  const name = prompt('Rename folder', e.name)?.trim();
+  const name = prompt('Rename folder (type the name of another folder here to merge into it)', e.name)?.trim();
   if (!name || name === e.name) return;
   let res;
   try {
     res = await api.renameFolder(e.path, name);
   } catch (err) {
+    if (err.status === 409) return void mergeFolder(e, name);
     return void toast(err.message);
   }
   queue.renameUnder(e.path, res.path);
@@ -416,6 +417,24 @@ async function renameFolder(e) {
   state.libTracks = null;
   await reloadView();
   toast(`Renamed to ${name}`);
+}
+
+// A folder of that name already exists: offer to merge into it. Identical files are skipped and
+// nothing is overwritten.
+async function mergeFolder(e, name) {
+  if (!confirm(`A folder named "${name}" already exists here. Merge "${e.name}" into it?\n\nFiles that are already there are skipped, nothing is overwritten.`)) return;
+  const parent = dirOf(e.path);
+  let res;
+  try {
+    res = await api.mergeFolder(e.path, parent ? `${parent}/${name}` : name);
+  } catch (err) {
+    return void toast(err.message);
+  }
+  queue.remap(res.moves);
+  if (state.meta && Object.hasOwn(res.moves, state.meta.path)) state.meta.path = res.moves[state.meta.path];
+  state.libTracks = null;
+  await reloadView();
+  toast(`Merged into ${name}: ${res.moved} moved, ${res.duplicates} already there`);
 }
 
 async function deleteTrack(e) {

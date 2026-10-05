@@ -243,6 +243,44 @@ the parent folder (so a multi-disc album's `CD1`/`CD2` share the cover above the
 are not listed as files in the library, and only real JPEG, PNG, GIF and WebP images up to
 16 MiB are used; symlinks and hidden files are ignored.
 
+### Adding to something you already uploaded
+
+Tick **Add to the folder with this name if it already exists** (Upload tab) and type the folder's
+name: the upload then joins that folder instead of creating `name (2)`. Nothing is overwritten:
+
+- a folder that already exists is merged into, and a lone folder inside the archive that matches
+  one already there is merged rather than unwrapped, so a few new files for one album land in that
+  album;
+- a file with the same name **and identical bytes** is skipped and counted as "already in the
+  library"; the same name with different bytes is kept as `name (2).ext`;
+- the result says how many were new and how many were already there.
+
+Duplicates are found by path and content inside that folder; a file that was renamed, or sits in
+a different folder, is not recognised as a copy. Without the option every upload gets a fresh folder.
+
+To add only what an earlier upload dropped (cover pictures, WMA/APE files, archives inside the
+archive) without sending the whole thing again, build a small zip from the unpacked folder on your
+computer (needs 7-Zip and Node):
+
+```sh
+node scripts/delta-for-upload.mjs "E:Z_Gen Musicmusic" delta.zip
+```
+
+It takes up to three real pictures per folder, audio in the ffmpeg formats, and unpacks archives found
+inside the folders (everything in those is new, because the server never opens archives inside
+archives). Upload `delta.zip` with the same folder name and the merge option ticked.
+
+### Merging folders
+
+To merge two folders that are already in the library, **rename** one of them to the exact name of the
+other (same parent folder). The player then asks whether to merge. Everything in the first folder
+moves into the second and the first is removed. The rules are the same as for uploads: sub-folders
+that exist in both are merged, identical files are dropped, a file with the same name but other
+content is kept as `name (2).ext`, nothing is overwritten. Favorites and play counts follow the
+files, and the queue is updated. Hidden files and links are left behind (and the folder with them).
+There is no undo, but only identical duplicates are ever removed. The API is
+`POST /api/merge {path, into}`, which accepts any two folders that are not inside one another.
+
 ### Where uploads are stored
 
 Uploads are stored on the **host** in `UPLOADS_HOST_PATH` (`.env`), which defaults to `./uploads`,

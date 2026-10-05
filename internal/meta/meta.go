@@ -95,10 +95,7 @@ var sambaEscape = regexp.MustCompile(`#U([0-9A-Fa-f]{4})`)
 
 func decodeSambaEscapes(s string) string {
 	return sambaEscape.ReplaceAllStringFunc(s, func(m string) string {
-		n, err := strconv.ParseUint(m[2:], 16, 32)
-		if err != nil {
-			return m
-		}
+		n, _ := strconv.ParseUint(m[2:], 16, 32) // the pattern guarantees four hex digits
 		return string(rune(n))
 	})
 }

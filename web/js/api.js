@@ -45,6 +45,7 @@ export const api = {
   prefetch: (path) => request('POST', '/api/prefetch', { path }),
   deleteTrack: (p) => request('DELETE', `/api/track?${q({ p })}`),
   renameFolder: (path, name) => request('POST', '/api/rename', { path, name }),
+  mergeFolder: (path, into) => request('POST', '/api/merge', { path, into }),
   undo: (token) => request('POST', '/api/undo', { token }),
   getSettings: () => request('GET', '/api/settings'),
   putSettings: (s) => request('PUT', '/api/settings', s),

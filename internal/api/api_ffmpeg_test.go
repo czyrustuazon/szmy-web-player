@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -173,4 +174,53 @@ func TestUploadReportListsTheSkippedFiles(t *testing.T) {
 		t.Fatalf("tracks: %+v", tr.Tracks)
 	}
 	wantStatus(t, e.do("GET", "/api/art?p="+url.QueryEscape(tr.Tracks[0].Path), nil, nil), 200)
+}
+
+func TestMergeFolders(t *testing.T) {
+	e := newEnv(t, false, false)
+	song, _ := os.ReadFile(filepath.Join(e.root, "sub", "c.mp3"))
+	write(t, filepath.Join(e.root, "other", "c.mp3"), song) // the same file is already there
+	write(t, filepath.Join(e.root, "sub", "new.mp3"), mp3With("New", nil))
+	e.srv.Store.SetFavorite("sub/c.mp3", true)
+	e.srv.Store.SetFavorite("sub/new.mp3", true)
+	e.srv.Store.RecordPlay("sub/c.mp3")
+
+	rec := e.do("POST", "/api/merge", map[string]string{"path": "sub", "into": "other"}, nil)
+	wantStatus(t, rec, 200)
+	var out struct {
+		Path       string
+		Moved      int
+		Duplicates int
+		Skipped    int
+		Moves      map[string]string
+	}
+	decode(t, rec, &out)
+	if out.Path != "other" || out.Moved != 1 || out.Duplicates != 1 || out.Moves["sub/c.mp3"] != "other/c.mp3" || out.Moves["sub/new.mp3"] != "other/new.mp3" {
+		t.Fatalf("merge result: %+v", out)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, "sub")); err == nil {
+		t.Error("the merged folder is gone")
+	}
+	st := e.srv.Store
+	if !st.IsFavorite("other/c.mp3") || !st.IsFavorite("other/new.mp3") || st.IsFavorite("sub/c.mp3") || st.Plays("other/c.mp3") != 1 {
+		t.Error("favorites and play counts follow the files")
+	}
+	wantStatus(t, e.do("GET", "/api/meta?p=other/new.mp3", nil, nil), 200)
+
+	wantStatus(t, e.do("POST", "/api/merge", map[string]string{"path": "other", "into": "other/x"}, nil), 400)
+	wantStatus(t, e.do("POST", "/api/merge", map[string]string{"path": "missing", "into": "other"}, nil), 404)
+	wantStatus(t, e.do("POST", "/api/merge", "{", nil), 400)
+	ro := newEnvOpts(t, false, false, true)
+	wantStatus(t, ro.do("POST", "/api/merge", map[string]string{"path": "sub", "into": "x"}, nil), 403)
+
+	// If saving favorites fails the merge still happened; the problem is logged.
+	write(t, filepath.Join(e.root, "m1", "a.mp3"), mp3With("A", nil))
+	write(t, filepath.Join(e.root, "m2", "b.mp3"), mp3With("B", nil))
+	e.srv.Store.SetFavorite("m1/a.mp3", true)
+	os.Mkdir(filepath.Join(e.data, "state.json.tmp"), 0o755)
+	wantStatus(t, e.do("POST", "/api/merge", map[string]string{"path": "m1", "into": "m2"}, nil), 200)
+	lines, _ := e.logs.Recent(50)
+	if !strings.Contains(strings.Join(lines, "\n"), "site=merge") {
+		t.Errorf("a failed favorites update should be logged: %v", lines)
+	}
 }

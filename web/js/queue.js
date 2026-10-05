@@ -145,6 +145,13 @@ export class Queue {
     }
   }
 
+  // Files moved (a folder merge): point queued tracks at where their content is now.
+  remap(moves) {
+    for (const t of this.items) {
+      if (Object.hasOwn(moves, t.path)) t.path = moves[t.path];
+    }
+  }
+
   _goto(i) {
     this._push(i);
   }

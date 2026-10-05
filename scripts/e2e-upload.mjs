@@ -123,13 +123,13 @@ for (const [archive, title] of [['album.zip', 'Zip Album'], ['album.7z', '7z Alb
   const dir = path.join(MUSIC, 'uploads', 'Zip Album');
   const before = walk(dir).length;
   const [again] = await up().uploadBatch([fileOf('album.zip')], { title: 'Zip Album', merge: true });
-  check(again.state === 'done' && again.tracks === 0 && again.duplicates === 4, `the same archive again: nothing new, 4 already there (${again.tracks} new, ${again.duplicates} duplicates)`);
+  check(again.state === 'done' && !again.tracks && again.duplicates === 4, `the same archive again: nothing new, 4 already there (${again.tracks} new, ${again.duplicates} duplicates)`);
   check(walk(dir).length === before && !fs.existsSync(path.join(MUSIC, 'uploads', 'Zip Album (2)')), 'no copies and no "(2)" folder were made');
   const [delta] = await up().uploadBatch([fileOf('delta.zip')], { title: 'Zip Album', merge: true });
   check(delta.state === 'done' && delta.tracks === 1 && !delta.duplicates, `a delta with one new file adds just that (${delta.tracks})`);
   check(fs.existsSync(path.join(dir, 'CD2', 'extra.wma')), 'and it lands inside the existing CD2 folder, not at the top');
   const [loose] = await up().uploadBatch([fileOf('big.mp3')], { title: 'Big', merge: true });
-  check(loose.state === 'done' && loose.tracks === 0 && loose.duplicates === 1, 'a loose file already in the folder is recognised as a duplicate');
+  check(loose.state === 'done' && !loose.tracks && loose.duplicates === 1, 'a loose file already in the folder is recognised as a duplicate');
   const [plain] = await up().uploadBatch([fileOf('album.zip')], { title: 'Zip Album' });
   check(plain.tracks === 3 && fs.existsSync(path.join(MUSIC, 'uploads', 'Zip Album (2)')), 'without the merge option a new folder is made, as before');
 }

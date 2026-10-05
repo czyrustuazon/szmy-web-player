@@ -255,6 +255,33 @@ func (s *Store) MoveFavorites(from, to string) error {
 	return s.save()
 }
 
+// Remap moves favorites and play counts from the old path of each file to its new one (after a
+// folder merge). A favorite lands on the new path unless that path is a favorite already; play
+// counts add up.
+func (s *Store) Remap(moves map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for from, to := range moves {
+		if t, ok := s.st.Favorites[from]; ok {
+			delete(s.st.Favorites, from)
+			if _, exists := s.st.Favorites[to]; !exists {
+				s.st.Favorites[to] = t
+			}
+			changed = true
+		}
+		if n, ok := s.st.Plays[from]; ok {
+			delete(s.st.Plays, from)
+			s.st.Plays[to] += n
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.save()
+}
+
 // Settings returns the current settings.
 func (s *Store) Settings() Settings {
 	s.mu.Lock()

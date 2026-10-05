@@ -23,7 +23,6 @@
 package upload
 
 import (
-	"bytes"
 	"archive/zip"
 	"context"
 	"crypto/sha256"
@@ -628,34 +627,7 @@ func (s *mergeStats) tally(path string, dup bool) {
 }
 
 // sameContent is true when both are regular files with identical bytes.
-func sameContent(a, b string) bool {
-	fa, err := os.Open(a)
-	if err != nil {
-		return false
-	}
-	defer fa.Close()
-	fb, err := os.Open(b)
-	if err != nil {
-		return false
-	}
-	defer fb.Close()
-	ia, errA := fa.Stat()
-	ib, errB := fb.Stat()
-	if errA != nil || errB != nil || !ia.Mode().IsRegular() || !ib.Mode().IsRegular() || ia.Size() != ib.Size() {
-		return false
-	}
-	bufA, bufB := make([]byte, 64<<10), make([]byte, 64<<10)
-	for {
-		na, errA := io.ReadFull(fa, bufA)
-		nb, errB := io.ReadFull(fb, bufB)
-		if na != nb || !bytes.Equal(bufA[:na], bufB[:nb]) {
-			return false
-		}
-		if errA != nil || errB != nil {
-			return errA == errB // both ended together
-		}
-	}
-}
+func sameContent(a, b string) bool { return library.SameContent(a, b) }
 
 // merge moves everything in src into dst without ever overwriting: a folder that already exists
 // is merged into; a file that already exists with identical bytes is dropped as a duplicate

@@ -204,6 +204,54 @@ func TestSaveFailureIsReported(t *testing.T) {
 	}
 }
 
+func TestFavoritesUnderAndMove(t *testing.T) {
+	s, p := open(t)
+	s.now = func() time.Time { return time.Unix(7, 0) }
+	for _, f := range []string{"old/a.mp3", "old/deep/b.mp3", "other/c.mp3"} {
+		if err := s.SetFavorite(f, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.FavoritesUnder("old"); len(got) != 2 {
+		t.Fatalf("FavoritesUnder: %v", got)
+	}
+	if err := s.MoveFavorites("nothing", "x"); err != nil { // no match: no save
+		t.Fatal(err)
+	}
+	if err := s.MoveFavorites("old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsFavorite("new/a.mp3") || !s.IsFavorite("new/deep/b.mp3") || s.IsFavorite("old/a.mp3") {
+		t.Fatalf("favorites did not follow the rename: %+v", s.Favorites())
+	}
+	if err := s.MoveFavorites("new", ""); err != nil { // to == "": dropped
+		t.Fatal(err)
+	}
+	again, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if favs := again.Favorites(); len(favs) != 1 || favs[0].Path != "other/c.mp3" {
+		t.Fatalf("dropped favorites persisted: %+v", favs)
+	}
+}
+
+func TestMovePlaysEdges(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.RecordPlay("old/a.mp3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MovePlays("old", ""); err != nil { // undone delete keeps history
+		t.Fatal(err)
+	}
+	if err := s.MovePlays("nothing", "x"); err != nil { // no match: no save
+		t.Fatal(err)
+	}
+	if s.Plays("old/a.mp3") != 1 {
+		t.Fatal("plays should be untouched")
+	}
+}
+
 func TestPlaysCountAndFollowRename(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	s, err := Open(path)
@@ -227,5 +275,36 @@ func TestPlaysCountAndFollowRename(t *testing.T) {
 	}
 	if r.Plays("new/a.mp3") != 2 {
 		t.Fatal("plays not persisted")
+	}
+}
+
+func TestRemapFollowsMovedFilesAndMergesDuplicates(t *testing.T) {
+	s, p := open(t)
+	s.SetFavorite("a/x.mp3", true)
+	s.SetFavorite("a/y.mp3", true)
+	s.SetFavorite("b/y.mp3", true) // already a favorite where y.mp3 ends up
+	s.RecordPlay("a/x.mp3")
+	s.RecordPlay("a/y.mp3")
+	s.RecordPlay("a/y.mp3")
+	s.RecordPlay("b/y.mp3")
+	if err := s.Remap(map[string]string{"a/x.mp3": "b/x (2).mp3", "a/y.mp3": "b/y.mp3", "a/unknown.mp3": "b/unknown.mp3"}); err != nil {
+		t.Fatal(err)
+	}
+	if s.IsFavorite("a/x.mp3") || !s.IsFavorite("b/x (2).mp3") || s.IsFavorite("a/y.mp3") || !s.IsFavorite("b/y.mp3") {
+		t.Error("favorites must follow the files")
+	}
+	if s.Plays("a/x.mp3") != 0 || s.Plays("b/x (2).mp3") != 1 || s.Plays("b/y.mp3") != 3 {
+		t.Errorf("play counts follow and add up: %d %d", s.Plays("b/x (2).mp3"), s.Plays("b/y.mp3"))
+	}
+	again, _ := Open(p)
+	if !again.IsFavorite("b/x (2).mp3") || again.Plays("b/y.mp3") != 3 {
+		t.Error("the remap must be saved")
+	}
+	if err := s.Remap(map[string]string{"nothing": "here"}); err != nil || s.Remap(nil) != nil {
+		t.Error("nothing to move is not an error")
+	}
+	os.Mkdir(p+".tmp", 0o755) // saving now fails
+	if err := s.Remap(map[string]string{"b/x (2).mp3": "c.mp3"}); err == nil {
+		t.Error("a failed save is reported")
 	}
 }

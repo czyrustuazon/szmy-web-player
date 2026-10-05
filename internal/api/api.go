@@ -105,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/prefetch", s.protect(s.prefetch))
 	mux.HandleFunc("DELETE /api/track", s.protect(s.deleteTrack))
 	mux.HandleFunc("POST /api/rename", s.protect(s.renameFolder))
+	mux.HandleFunc("POST /api/merge", s.protect(s.mergeFolder))
 	mux.HandleFunc("POST /api/undo", s.protect(s.undoDelete))
 	mux.HandleFunc("POST /api/upload/start", s.protect(s.uploadStart))
 	mux.HandleFunc("POST /api/upload/begin", s.protect(s.uploadBegin))
@@ -205,7 +206,7 @@ func (s *Server) fail(w http.ResponseWriter, err error, site, p string) {
 	case errors.Is(err, library.ErrNotAudio):
 		status = http.StatusUnsupportedMediaType
 		s.Log.Append(errlog.CodeUnsupported, site, p, "")
-	case errors.Is(err, library.ErrNotFile), errors.Is(err, library.ErrBadToken), errors.Is(err, library.ErrBadName), errors.Is(err, library.ErrNotDir):
+	case errors.Is(err, library.ErrNotFile), errors.Is(err, library.ErrBadToken), errors.Is(err, library.ErrBadName), errors.Is(err, library.ErrNotDir), errors.Is(err, library.ErrNested):
 		status = http.StatusBadRequest
 	case errors.Is(err, library.ErrExists):
 		status = http.StatusConflict
@@ -678,6 +679,32 @@ func (s *Server) renameFolder(w http.ResponseWriter, r *http.Request) {
 		s.Log.Append(errlog.CodeIO, "rename", clean, err.Error())
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": dest, "name": body.Name})
+}
+
+// mergeFolder moves everything in one folder into another and removes the first. Nothing is
+// overwritten (see library.Merge); favorites and play counts follow the files.
+func (s *Server) mergeFolder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path string `json:"path"`
+		Into string `json:"into"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	clean := library.CleanRel(body.Path)
+	res, err := s.Lib.Merge(clean, body.Into)
+	if len(res.Moves) > 0 { // keep favorites right even if the merge stopped half way
+		if rerr := s.Store.Remap(res.Moves); rerr != nil {
+			s.Log.Append(errlog.CodeIO, "merge", clean, rerr.Error())
+		}
+	}
+	if err != nil {
+		s.fail(w, err, "merge", clean)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path": res.Path, "moved": res.Moved, "duplicates": res.Duplicates, "skipped": res.Skipped, "moves": res.Moves,
+	})
 }
 
 func (s *Server) rememberUndo(token string, wasFav bool, favs []string) {
