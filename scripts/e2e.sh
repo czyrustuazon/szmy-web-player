@@ -31,11 +31,20 @@ docker run --rm -v "$tmp/fixtures:/f" --entrypoint sh "$IMG" -c '
   mk big.mp3 41943040
   mk src/Album/01.mp3 300000; mk src/Album/02.mp3 300000; mk src/Album/CD2/03.mp3 300000
   echo notes > src/Album/readme.txt
-  printf "\211PNG\r\n" > src/Album/cover.png
+  printf "\211PNG\r\n" > src/Album/cover.png          # not a real picture: dropped
+  printf "\377\330\377\340 a small picture" > src/Album/cover.jpg   # a real one: kept as cover art
   printf "#!/bin/sh\nrm -rf /\n" > src/Album/run.sh
   ln -s /etc/passwd src/Album/link.mp3
   7z a -tzip -snl album.zip src/Album >/dev/null
   7z a -snl album.7z src/Album >/dev/null
+  # Formats browsers cannot play, made by the ffmpeg inside the image (it has no APE encoder).
+  mkdir -p ff
+  tone="-f lavfi -i sine=frequency=440:duration=2"
+  tags="-metadata title=Windows -metadata artist=Redmond"
+  ffmpeg -v error $tone $tags -c:a wmav2 ff/song.wma
+  ffmpeg -v error $tone $tags -c:a wavpack ff/song.wv
+  ffmpeg -v error $tone $tags -c:a flac ff/song.mka
+  ffmpeg -v error $tone $tags -c:a libmp3lame ff/song.flv
   chmod -R a+rX /f
 '
 

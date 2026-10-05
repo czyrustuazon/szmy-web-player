@@ -86,3 +86,52 @@ func TestKindProperties(t *testing.T) {
 		t.Error("out of range kinds should stringify as unknown")
 	}
 }
+
+func TestFFmpegFormatsByMagicAndExtension(t *testing.T) {
+	asf := []byte{0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C, 1, 2}
+	magics := map[string][]byte{
+		"asf/wma/wmv": asf,
+		"ape":         []byte("MAC \x96\x0f"),
+		"wavpack":     []byte("wvpk\x00"),
+		"tta":         []byte("TTA1"),
+		"musepack":    []byte("MPCK"),
+		"musepack sv7": []byte("MP+\x07"),
+		"dsf":         []byte("DSD \x1c"),
+		"dff":         []byte("FRM8"),
+		"flv":         []byte("FLV\x01\x05"),
+		"amr":         []byte("#!AMR\n"),
+		"matroska":    {0x1A, 0x45, 0xDF, 0xA3, 0x01},
+		"aiff":        []byte("FORM\x00\x00\x00\x00AIFFCOMM"),
+		"aifc":        []byte("FORM\x00\x00\x00\x00AIFCFVER"),
+		"avi":         []byte("RIFF\x00\x00\x00\x00AVI LIST"),
+	}
+	for name, header := range magics {
+		if got := Detect(header, "x.bin"); got != FFmpeg {
+			t.Errorf("%s: got %v", name, got)
+		}
+	}
+	// A WAV is still a WAV, a lone FORM chunk that is neither AIFF nor AIFC is not claimed.
+	if Detect([]byte("RIFF\x00\x00\x00\x00WAVEfmt "), "x.bin") != WAV {
+		t.Error("wav")
+	}
+	if got := Detect([]byte("FORM\x00\x00\x00\x00ILBM"), "x.bin"); got != Unknown {
+		t.Errorf("an IFF picture is not audio: %v", got)
+	}
+	if got := Detect([]byte("RIFF\x00\x00\x00\x00ACON"), "x.bin"); got != Unknown {
+		t.Errorf("an animated cursor is not audio: %v", got)
+	}
+	for _, name := range []string{"a.wma", "A.WMV", "x.asf", "x.ape", "x.wv", "x.tta", "x.mka", "x.mpc", "x.dsf", "x.dff",
+		"x.flv", "x.avi", "x.mkv", "x.mov", "x.webm", "x.3gp", "x.amr", "x.ac3", "x.dts", "x.aif", "x.aiff", "x.aifc", "x.mp2", "x.caf"} {
+		if FromExt(name) != FFmpeg {
+			t.Errorf("%s should need ffmpeg", name)
+		}
+	}
+	for _, name := range []string{"x.mid", "x.midi", "x.cue", "x.jpg"} {
+		if FromExt(name) != Unknown {
+			t.Errorf("%s is not audio", name)
+		}
+	}
+	if FFmpeg.Native() || FFmpeg.String() != "ffmpeg" || FFmpeg.MIME() != "audio/flac" {
+		t.Errorf("properties: %v %q %q", FFmpeg.Native(), FFmpeg.String(), FFmpeg.MIME())
+	}
+}

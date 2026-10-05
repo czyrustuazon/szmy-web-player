@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { suggestTitle, describeResult, summarize, isArchive, is7z } from '../../web/js/uploadview.js';
+import { suggestTitle, describeResult, describeTypes, reportUrl, summarize, isArchive, is7z } from '../../web/js/uploadview.js';
 import { fmtBytes } from '../../web/js/util.js';
 
 const f = (name) => ({ name, size: 10 });
@@ -30,8 +30,27 @@ test('results read naturally', () => {
   assert.equal(describeResult({ state: 'done', tracks: 12 }), '12 tracks added');
   assert.equal(describeResult({ state: 'done', tracks: 12, skipped: 3 }), '12 tracks added, 3 other files skipped');
   assert.equal(describeResult({ state: 'done', tracks: 1, skipped: 1 }), '1 track added, 1 other file skipped');
+  assert.equal(
+    describeResult({ state: 'done', tracks: 9136, skipped: 1173, skippedTypes: { txt: 66, jpg: 927, png: 100, log: 20 } }),
+    '9136 tracks added, 1173 other files skipped (jpg ×927, png ×100, txt ×66, log ×20)',
+  );
   assert.equal(describeResult({ state: 'failed', error: 'not an audio file' }), 'not an audio file');
   assert.equal(describeResult({ state: 'failed' }), 'Upload failed');
+});
+
+test('skipped types are grouped, biggest first, with a tail', () => {
+  assert.equal(describeTypes({}), '');
+  assert.equal(describeTypes(undefined), '');
+  assert.equal(describeTypes({ b: 2, a: 2, c: 5 }), 'c ×5, a ×2, b ×2');
+  const many = { a: 9, b: 8, c: 7, d: 6, e: 5, f: 4, g: 3, h: 2 };
+  assert.equal(describeTypes(many), 'a ×9, b ×8, c ×7, d ×6, e ×5, f ×4, 2 more types');
+  assert.equal(describeTypes({ ...many, i: 1 }, 8), 'a ×9, b ×8, c ×7, d ×6, e ×5, f ×4, g ×3, h ×2, 1 more type');
+});
+
+test('the report link needs a saved report', () => {
+  assert.equal(reportUrl({ name: 'a.zip', path: 'x' }), '');
+  assert.equal(reportUrl({ name: 'my music.7z', path: 'My Album', hasReport: true }), '/api/upload/report?relPath=My%20Album&filename=my%20music.7z');
+  assert.equal(reportUrl({ name: 'a.zip', hasReport: true }), '/api/upload/report?relPath=&filename=a.zip');
 });
 
 test('batch summaries', () => {
@@ -49,4 +68,14 @@ test('byte sizes', () => {
   assert.equal(fmtBytes(3 * 1024 ** 3), '3.00 GB');
   assert.equal(fmtBytes(-1), '');
   assert.equal(fmtBytes(NaN), '');
+});
+
+test('format labels use the extension for converted formats', async () => {
+  const { kindLabel } = await import('../../web/js/util.js');
+  assert.equal(kindLabel('ffmpeg', 'A/b.wma'), 'WMA');
+  assert.equal(kindLabel('vgm', 'A/b.brstm'), 'BRSTM');
+  assert.equal(kindLabel('ffmpeg', 'noext'), 'FFMPEG');
+  assert.equal(kindLabel('mp3', 'A/b.mp3'), 'MP3');
+  assert.equal(kindLabel('', 'x'), 'FILE');
+  assert.equal(kindLabel('', 'x', ''), '');
 });

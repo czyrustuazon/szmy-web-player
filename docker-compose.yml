@@ -17,6 +17,11 @@ services:
       # Who may connect (see .env.example): your Tailscale network and home network by default.
       MP_ALLOWED_NETS: "${MP_ALLOWED_NETS:-tailscale,lan}"
       MP_KNOWN_DEVICES: "${MP_KNOWN_DEVICES:-}"
+      # Sign in with Google, for a public tunnel (see .env.example). Off while the client id is blank.
+      MP_GOOGLE_CLIENT_ID: "${MP_GOOGLE_CLIENT_ID:-}"
+      MP_GOOGLE_CLIENT_SECRET: "${MP_GOOGLE_CLIENT_SECRET:-}"
+      MP_ALLOWED_EMAILS: "${MP_ALLOWED_EMAILS:-}"
+      MP_PUBLIC_URL: "${MP_PUBLIC_URL:-}"
       MP_READ_ONLY: "${MP_READ_ONLY:-false}"
       MP_UPLOAD_SUBDIR: "${MP_UPLOAD_SUBDIR:-uploads}"
       MP_COOKIE_SECURE: "${MP_COOKIE_SECURE:-false}"

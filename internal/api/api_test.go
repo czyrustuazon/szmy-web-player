@@ -514,7 +514,7 @@ func TestDeleteErrorsAndUndoBookkeeping(t *testing.T) {
 	var del map[string]string
 	decode(t, rec, &del)
 	now = now.Add(2 * time.Hour)
-	e.srv.rememberUndo("0000000000000000", false)
+	e.srv.rememberUndo("0000000000000000", false, nil)
 	e.srv.undoMu.Lock()
 	_, kept := e.srv.undo[del["token"]]
 	e.srv.undoMu.Unlock()
@@ -607,4 +607,35 @@ func TestFailMapsInternalErrorsWithoutLeaking(t *testing.T) {
 			t.Errorf("%v: got %d want %d", err, rec.Code, code)
 		}
 	}
+}
+
+func TestRenameAndDeleteFolder(t *testing.T) {
+	e := newEnv(t, false, false)
+	write(t, filepath.Join(e.root, "dir", "s.mp3"), mp3With("s", nil))
+	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "dir/s.mp3", "on": true}, nil), 200)
+
+	rec := e.do("POST", "/api/rename", map[string]string{"path": "dir", "name": "renamed"}, nil)
+	wantStatus(t, rec, 200)
+	if !e.srv.Store.IsFavorite("renamed/s.mp3") || e.srv.Store.IsFavorite("dir/s.mp3") {
+		t.Fatal("favorites must follow a renamed folder")
+	}
+	wantStatus(t, e.do("POST", "/api/rename", map[string]string{"path": "renamed", "name": "../x"}, nil), 400)
+	wantStatus(t, e.do("POST", "/api/rename", map[string]string{"path": "missing", "name": "x"}, nil), 404)
+	wantStatus(t, e.do("POST", "/api/rename", "{", nil), 400)
+
+	rec = e.do("DELETE", "/api/track?p=renamed", nil, nil)
+	wantStatus(t, rec, 200)
+	var del map[string]any
+	decode(t, rec, &del)
+	if del["isDir"] != true {
+		t.Fatalf("delete response: %v", del)
+	}
+	if e.srv.Store.IsFavorite("renamed/s.mp3") {
+		t.Fatal("deleting a folder must drop the favorites inside it")
+	}
+	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": del["token"].(string)}, nil), 200)
+	if !e.srv.Store.IsFavorite("renamed/s.mp3") {
+		t.Error("undo must restore favorites inside the folder")
+	}
+	wantStatus(t, e.do("GET", "/api/meta?p=renamed/s.mp3", nil, nil), 200)
 }

@@ -28,6 +28,8 @@ var (
 	ErrNotAudio = errors.New("not an audio file")
 	ErrNotFile  = errors.New("not a regular file")
 	ErrExists   = errors.New("destination already exists")
+	ErrBadName  = errors.New("invalid folder name")
+	ErrNotDir   = errors.New("not a folder")
 	ErrBadToken = errors.New("invalid undo token")
 )
 
@@ -48,6 +50,7 @@ type Trashed struct {
 	Token string
 	Path  string
 	Name  string
+	IsDir bool
 }
 
 // Library is a music folder.
@@ -170,6 +173,9 @@ func entryFor(dir, absDir string, de fs.DirEntry) (Entry, bool) {
 	info, err := os.Stat(abs) // follows symlinks
 	if err != nil {
 		return Entry{}, false
+	}
+	if !info.IsDir() && IsImageName(name) {
+		return Entry{}, false // pictures are cover art, not something to browse
 	}
 	e := Entry{Name: name, Path: relJoin(dir, name), IsDir: info.IsDir(), Size: info.Size()}
 	if !e.IsDir {
@@ -301,8 +307,8 @@ func randToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// Delete moves a file into the trash. It is restorable with Undo until
-// PurgeTrash removes it.
+// Delete moves a file or folder into the trash. It is restorable with Undo
+// until PurgeTrash removes it.
 func (l *Library) Delete(rel string) (Trashed, error) {
 	if l.readOnly {
 		return Trashed{}, ErrReadOnly
@@ -311,11 +317,14 @@ func (l *Library) Delete(rel string) (Trashed, error) {
 	if err != nil {
 		return Trashed{}, err
 	}
+	if CleanRel(rel) == "" {
+		return Trashed{}, ErrBadName // never the library root
+	}
 	st, err := os.Stat(abs)
 	if err != nil {
 		return Trashed{}, err
 	}
-	if !st.Mode().IsRegular() {
+	if !st.Mode().IsRegular() && !st.IsDir() {
 		return Trashed{}, ErrNotFile
 	}
 	token, err := randToken()
@@ -331,11 +340,65 @@ func (l *Library) Delete(rel string) (Trashed, error) {
 		os.RemoveAll(dir)
 		return Trashed{}, err
 	}
-	if err := MoveFile(abs, filepath.Join(dir, "f")); err != nil {
+	if err := move(abs, filepath.Join(dir, "f"), st.IsDir()); err != nil {
 		os.RemoveAll(dir)
 		return Trashed{}, err
 	}
-	return Trashed{Token: token, Path: clean, Name: filepath.Base(abs)}, nil
+	return Trashed{Token: token, Path: clean, Name: filepath.Base(abs), IsDir: st.IsDir()}, nil
+}
+
+// move renames a folder (which cannot be copied across file systems here) or
+// moves a file with MoveFile.
+func move(src, dst string, isDir bool) error {
+	if isDir {
+		return renameFile(src, dst)
+	}
+	return MoveFile(src, dst)
+}
+
+// Rename gives the folder at rel a new name within the same parent and returns
+// its new path.
+func (l *Library) Rename(rel, newName string) (string, error) {
+	if l.readOnly {
+		return "", ErrReadOnly
+	}
+	if newName == "" || newName == "." || newName == ".." || strings.HasPrefix(newName, ".") ||
+		strings.ContainsAny(newName, `/\:*?"<>|`) || strings.TrimSpace(newName) != newName {
+		return "", ErrBadName
+	}
+	clean := CleanRel(rel)
+	if clean == "" {
+		return "", ErrBadName
+	}
+	abs, err := l.Resolve(clean)
+	if err != nil {
+		return "", err
+	}
+	st, err := os.Lstat(abs)
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() {
+		return "", ErrNotDir
+	}
+	dest := newName
+	if dir := path.Dir(clean); dir != "." {
+		dest = relJoin(dir, newName)
+	}
+	destAbs, err := l.Resolve(dest)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(destAbs); err == nil {
+		// A case-only rename "finds" itself on case-insensitive disks; allow that.
+		if base := filepath.Base(abs); base == newName || !strings.EqualFold(base, newName) {
+			return "", ErrExists
+		}
+	}
+	if err := renameFile(abs, destAbs); err != nil {
+		return "", err
+	}
+	return dest, nil
 }
 
 // Undo restores a trashed file to where it was and returns its path.
@@ -359,7 +422,11 @@ func (l *Library) Undo(token string) (string, error) {
 		return "", ErrExists
 	}
 	_ = os.MkdirAll(filepath.Dir(dest), 0o755) // if this fails, the move below reports why
-	if err := MoveFile(filepath.Join(dir, "f"), dest); err != nil {
+	st, err := os.Lstat(filepath.Join(dir, "f"))
+	if err != nil {
+		return "", err
+	}
+	if err := move(filepath.Join(dir, "f"), dest, st.IsDir()); err != nil {
 		return "", err
 	}
 	os.RemoveAll(dir)

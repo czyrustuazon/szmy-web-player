@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -334,10 +335,10 @@ func TestChunkedUploadOfALooseAudioFile(t *testing.T) {
 
 	// Asking again, or reloading, returns the tracked outcome instead of redoing anything.
 	again, err := m.Complete(rel, "My Song.mp3", int64(len(mp3)))
-	if err != nil || again != st {
+	if err != nil || !reflect.DeepEqual(again, st) {
 		t.Errorf("idempotent complete: %+v %v", again, err)
 	}
-	if got, found := m.StatusOf(rel, "My Song.mp3"); !found || got != st {
+	if got, found := m.StatusOf(rel, "My Song.mp3"); !found || !reflect.DeepEqual(got, st) {
 		t.Errorf("status: %+v %v", got, found)
 	}
 	// Starting the same file again discards the old verdict.
@@ -609,7 +610,7 @@ func TestCompleteReturnsTheTrackedStatusWithoutRevalidating(t *testing.T) {
 	want := Status{State: Done, TotalBytes: 9, BytesWritten: 9, Tracks: 3}
 	m.setStatus(p, want)
 	got, err := m.Complete(rel, "gone.zip", 9) // no session files exist at all
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v %v", got, err)
 	}
 }

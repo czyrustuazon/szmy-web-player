@@ -20,7 +20,8 @@ import (
 	"time"
 )
 
-// Info is what vgmstream knows about a stream, including loop points.
+// Info is what the decoder knows about a stream: vgmstream gives loop points, ffmpeg's
+// probe gives tags.
 type Info struct {
 	SampleRate   int    `json:"sampleRate"`
 	Channels     int    `json:"channels"`
@@ -29,6 +30,11 @@ type Info struct {
 	LoopEnd      int64  `json:"loopEnd"`
 	HasLoop      bool   `json:"hasLoop"`
 	Title        string `json:"title"`
+	Artist       string `json:"artist"`
+	Album        string `json:"album"`
+	Genre        string `json:"genre"`
+	Year         string `json:"year"`
+	Track        string `json:"track"`
 }
 
 // Runner is the decoder backend (vgmstream-cli in production, a fake in tests).
@@ -50,16 +56,21 @@ type VGMStream struct {
 	Exec ExecFunc // nil means a real subprocess
 }
 
-func (v VGMStream) run(ctx context.Context, args ...string) ([]byte, error) {
-	ex := v.Exec
+// runCommand runs bin through ex (a real subprocess when nil) and wraps a failure with the
+// tail of its output.
+func runCommand(ctx context.Context, ex ExecFunc, bin string, args ...string) ([]byte, error) {
 	if ex == nil {
 		ex = defaultExec
 	}
-	out, err := ex(ctx, v.Bin, args...)
+	out, err := ex(ctx, bin, args...)
 	if err != nil {
-		return out, fmt.Errorf("%s: %w: %s", v.Bin, err, tail(out))
+		return out, fmt.Errorf("%s: %w: %s", bin, err, tail(out))
 	}
 	return out, nil
+}
+
+func (v VGMStream) run(ctx context.Context, args ...string) ([]byte, error) {
+	return runCommand(ctx, v.Exec, v.Bin, args...)
 }
 
 func tail(b []byte) string {
@@ -139,6 +150,7 @@ type call struct {
 type Service struct {
 	run      Runner
 	cacheDir string
+	ext      string // extension of the rendered files: ".wav" (vgmstream) or ".flac" (ffmpeg)
 	maxCache int64
 	timeout  time.Duration
 	sem      chan struct{}
@@ -148,8 +160,25 @@ type Service struct {
 	infos    map[string]Info
 }
 
+// Option customises a Service.
+type Option func(*Service)
+
+// WithExt sets the extension of the rendered files (default ".wav").
+func WithExt(ext string) Option { return func(s *Service) { s.ext = ext } }
+
+// WithTimeout sets how long one render may take (default five minutes).
+func WithTimeout(d time.Duration) Option { return func(s *Service) { s.timeout = d } }
+
+// MIME is the Content-Type of the files this service renders.
+func (s *Service) MIME() string {
+	if s.ext == ".flac" {
+		return "audio/flac"
+	}
+	return "audio/wav"
+}
+
 // New creates the cache directory and clears stale partial files.
-func New(run Runner, cacheDir string, workers int, maxCacheBytes int64) (*Service, error) {
+func New(run Runner, cacheDir string, workers int, maxCacheBytes int64, opts ...Option) (*Service, error) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -161,15 +190,20 @@ func New(run Runner, cacheDir string, workers int, maxCacheBytes int64) (*Servic
 			os.Remove(p)
 		}
 	}
-	return &Service{
+	s := &Service{
 		run:      run,
 		cacheDir: cacheDir,
+		ext:      ".wav",
 		maxCache: maxCacheBytes,
 		timeout:  5 * time.Minute,
 		sem:      make(chan struct{}, workers),
 		inflight: map[string]*call{},
 		infos:    map[string]Info{},
-	}, nil
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 func (s *Service) key(src string) (string, error) {
@@ -211,7 +245,7 @@ func (s *Service) Render(ctx context.Context, src string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out := filepath.Join(s.cacheDir, key+".wav")
+	out := filepath.Join(s.cacheDir, key+s.ext)
 	if st, err := os.Stat(out); err == nil && st.Size() > 0 {
 		now := time.Now()
 		_ = os.Chtimes(out, now, now) // keeps the cache LRU
@@ -288,7 +322,7 @@ func (s *Service) trim() {
 	var total int64
 	for _, de := range des {
 		info, err := de.Info()
-		if err != nil || !strings.HasSuffix(de.Name(), ".wav") {
+		if err != nil || !strings.HasSuffix(de.Name(), s.ext) {
 			continue // not a render, or it vanished while we were listing
 		}
 		items = append(items, item{filepath.Join(s.cacheDir, de.Name()), info.Size(), info.ModTime()})

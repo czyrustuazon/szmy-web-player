@@ -69,3 +69,13 @@ export function debounce(fn, ms) {
     t = setTimeout(() => fn(...args), ms);
   };
 }
+
+// What to call a file's format in the UI. vgmstream and ffmpeg cover dozens of formats, so for
+// them the file extension (WMA, BRSTM...) says more than the kind does.
+export function kindLabel(kind, path = '', fallback = 'file') {
+  if (kind === 'vgm' || kind === 'ffmpeg') {
+    const ext = /\.([A-Za-z0-9]{1,6})$/.exec(path || '');
+    if (ext) return ext[1].toUpperCase();
+  }
+  return (kind || fallback).toUpperCase();
+}

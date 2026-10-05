@@ -3,12 +3,14 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"masterplayer/internal/access"
+	"masterplayer/internal/google"
 )
 
 // Config is the full runtime configuration.
@@ -32,6 +34,14 @@ type Config struct {
 	AllowedNets     string   // who may connect, by network: see package access (default "tailscale,lan")
 	KnownDevices    []string // if set, Tailscale peers must be one of these device names
 	TailscaleSocket string   // tailscaled's local API socket, used to name Tailscale peers
+
+	// Sign in with Google, for reaching the player through a public tunnel. Only the listed
+	// addresses get in. Needs MP_PUBLIC_URL, the address people type (https://music.example.org).
+	GoogleClientID     string
+	GoogleClientSecret string
+	AllowedEmails      []string
+	PublicURL          string // no trailing slash
+	GoogleEnabled      bool   // derived: a client id is set
 }
 
 // Load reads configuration through getenv (os.Getenv in production).
@@ -81,12 +91,27 @@ func Load(getenv func(string) string) (Config, error) {
 		AllowedNets:     str("MP_ALLOWED_NETS", "tailscale,lan"),
 		KnownDevices:    access.ParseDevices(getenv("MP_KNOWN_DEVICES")),
 		TailscaleSocket: str("MP_TAILSCALE_SOCKET", "/var/run/tailscale/tailscaled.sock"),
+
+		GoogleClientID:     str("MP_GOOGLE_CLIENT_ID", ""),
+		GoogleClientSecret: str("MP_GOOGLE_CLIENT_SECRET", ""),
+		AllowedEmails:      google.ParseEmails(getenv("MP_ALLOWED_EMAILS")),
+		PublicURL:          strings.TrimRight(str("MP_PUBLIC_URL", ""), "/"),
 	}
 	if firstErr != nil {
 		return Config{}, firstErr
 	}
-	// A blank (or whitespace-only) password means open access: no login at all.
-	c.AuthDisabled = strings.TrimSpace(c.AdminPassword) == ""
+	c.GoogleEnabled = c.GoogleClientID != "" || c.GoogleClientSecret != ""
+	if c.GoogleEnabled {
+		if err := c.checkGoogle(); err != nil {
+			return Config{}, err
+		}
+		// Signing in over https: the session cookie must never travel over plain http.
+		if strings.HasPrefix(c.PublicURL, "https://") {
+			c.CookieSecure = true
+		}
+	}
+	// A blank (or whitespace-only) password and no Google sign-in means open access: no login at all.
+	c.AuthDisabled = strings.TrimSpace(c.AdminPassword) == "" && !c.GoogleEnabled
 
 	if c.Port < 1 || c.Port > 65535 {
 		return Config{}, fmt.Errorf("MP_PORT: %d is out of range", c.Port)
@@ -116,6 +141,25 @@ func Load(getenv func(string) string) (Config, error) {
 	c.UploadSubdir = sub
 	return c, nil
 }
+
+// checkGoogle makes sure Google sign-in cannot be switched on half-configured: without an
+// allowlist every Google account in the world would be let in.
+func (c Config) checkGoogle() error {
+	if c.GoogleClientID == "" || c.GoogleClientSecret == "" {
+		return fmt.Errorf("MP_GOOGLE_CLIENT_ID and MP_GOOGLE_CLIENT_SECRET must both be set")
+	}
+	if len(c.AllowedEmails) == 0 {
+		return fmt.Errorf("MP_ALLOWED_EMAILS is required with Google sign-in: list the addresses that may get in")
+	}
+	u, err := url.Parse(c.PublicURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") {
+		return fmt.Errorf("MP_PUBLIC_URL must be the address people type, like https://music.example.org (got %q)", c.PublicURL)
+	}
+	return nil
+}
+
+// GoogleRedirectURL is the callback address to register in the Google Cloud console.
+func (c Config) GoogleRedirectURL() string { return c.PublicURL + "/auth/google/callback" }
 
 func cleanSubdir(v string) (string, error) {
 	s := path.Clean(filepath.ToSlash(v))

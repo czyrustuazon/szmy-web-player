@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"masterplayer/internal/auth"
 	"masterplayer/internal/config"
 	"masterplayer/internal/errlog"
+	"masterplayer/internal/google"
 	"masterplayer/internal/library"
 	"masterplayer/internal/store"
 	"masterplayer/internal/transcode"
@@ -88,6 +91,21 @@ func run(cfg config.Config) error {
 		fmt.Printf("warning: %q not found; BRSTM/BCSTM/BFSTM and other game formats will not play\n", cfg.VgmstreamBin)
 	}
 
+	// ffmpeg converts the formats browsers cannot play (WMA, APE, WavPack, WMV, FLV...) to FLAC once.
+	var ff *transcode.Service
+	if bin, err := exec.LookPath("ffmpeg"); err == nil {
+		if probe, err := exec.LookPath("ffprobe"); err == nil {
+			ff, err = transcode.New(transcode.FFmpeg{Bin: bin, Probe: probe}, filepath.Join(cfg.CacheDir(), "ffmpeg"),
+				cfg.TranscodeWorkers, cfg.CacheMB<<20, transcode.WithExt(".flac"), transcode.WithTimeout(15*time.Minute))
+			if err != nil {
+				return fmt.Errorf("ffmpeg cache: %w", err)
+			}
+		}
+	}
+	if ff == nil {
+		fmt.Println("warning: ffmpeg/ffprobe not found; WMA, APE, WavPack, WMV, FLV and similar formats will not play")
+	}
+
 	up := upload.New(lib.Root(), cfg.UploadSubdir, cfg.MaxUploadMB<<20, cfg.MinFreeMB<<20)
 	nets, err := access.ParseNets(cfg.AllowedNets) // already validated by config.Load
 	if err != nil {
@@ -99,8 +117,13 @@ func run(cfg config.Config) error {
 	}
 	policy := access.New(nets, cfg.KnownDevices, whois, log.Printf)
 	fmt.Println(policy.Describe())
+	var gc *google.Client
+	if cfg.GoogleEnabled {
+		gc = google.New(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL(), cfg.AllowedEmails)
+		fmt.Printf("Google sign-in on for %d address(es); redirect URI to register: %s\n", len(cfg.AllowedEmails), cfg.GoogleRedirectURL())
+	}
 
-	srv := api.New(api.Deps{Cfg: cfg, Lib: lib, Store: st, Auth: a, TX: tx, Up: up, Log: logger, Static: web.FS, Access: policy})
+	srv := api.New(api.Deps{Cfg: cfg, Lib: lib, Store: st, Auth: a, TX: tx, FF: ff, Up: up, Log: logger, Static: web.FS, Access: policy, Google: gc})
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
 		Handler:           srv.Handler(),
@@ -147,12 +170,15 @@ func purgeLoop(ctx context.Context, lib *library.Library, maxAge time.Duration, 
 
 const sessionTTL = 30 * 24 * time.Hour
 
-// setupAuth turns the login on when MP_ADMIN_PASSWORD is set. With a blank
-// password there is no login at all (open access) and a warning is returned.
+// setupAuth turns the login on when MP_ADMIN_PASSWORD is set or Google sign-in is configured.
+// With neither there is no login at all (open access) and a warning is returned.
 func setupAuth(cfg config.Config) (*auth.Auth, string, error) {
 	if cfg.AuthDisabled {
 		return auth.New(nil, nil, true, sessionTTL),
-			"WARNING: MP_ADMIN_PASSWORD is blank, so there is NO LOGIN: anyone who can reach this port can play, upload and delete. Set a password to turn the login on.", nil
+			"WARNING: MP_ADMIN_PASSWORD is blank, so there is NO LOGIN: anyone who can reach this port can play, upload and delete. Set a password (or Google sign-in) to turn the login on.", nil
+	}
+	if strings.TrimSpace(cfg.AdminPassword) == "" { // Google sign-in only: no password works
+		return auth.New(nil, nil, false, sessionTTL), "", nil
 	}
 	salt, err := auth.NewSalt()
 	if err != nil {

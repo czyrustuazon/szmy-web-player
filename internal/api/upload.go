@@ -21,6 +21,7 @@ import (
 //	                          header X-Chunk-CRC32, raw body
 //	POST /api/upload/complete {relPath, filename, size}        -> status
 //	GET  /api/upload/status   ?relPath=&filename=              -> status
+//	GET  /api/upload/report   ?relPath=&filename=              -> text: files left out of an archive
 //
 // complete and status always answer 200 with a "state" of running, done,
 // failed or corrupted; a chunk at the wrong offset answers 409 with the
@@ -140,6 +141,18 @@ func (s *Server) uploadComplete(w http.ResponseWriter, r *http.Request) {
 		s.Log.Append(errlog.CodeUpload, "upload-complete", req.Filename, st.Error)
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// uploadReport serves the list of files an archive upload left out, as plain text.
+func (s *Server) uploadReport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	p, err := s.Up.Report(q.Get("relPath"), q.Get("filename"))
+	if err != nil {
+		s.fail(w, err, "upload-report", q.Get("filename"))
+		return
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	serveFile(w, r, p, "text/plain; charset=utf-8")
 }
 
 func (s *Server) uploadStatus(w http.ResponseWriter, r *http.Request) {

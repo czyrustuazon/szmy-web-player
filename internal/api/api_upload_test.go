@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -127,7 +128,7 @@ func TestChunkedUploadOverHTTP(t *testing.T) {
 	// Status of a finished file is still answerable (a reload can ask).
 	var again upload.Status
 	decode(t, e.do("GET", "/api/upload/status?relPath=uploads/My%20Album&filename=My%20Song.mp3", nil, c), &again)
-	if again != st {
+	if !reflect.DeepEqual(again, st) {
 		t.Errorf("status: %+v", again)
 	}
 }

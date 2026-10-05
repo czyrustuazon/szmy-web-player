@@ -98,7 +98,18 @@ for (const [archive, title] of [['album.zip', 'Zip Album'], ['album.7z', '7z Alb
   check(r.tracks === 3, `${archive}: three tracks added (got ${r.tracks})`);
   const dir = path.join(MUSIC, 'uploads', title);
   const names = walk(dir).map((p) => path.relative(dir, p)).sort();
-  check(JSON.stringify(names) === JSON.stringify(['01.mp3', '02.mp3', 'CD2/03.mp3']), `${archive}: exactly the audio files, wrapper folder removed (${names.join(', ')})`);
+  check(JSON.stringify(names) === JSON.stringify(['01.mp3', '02.mp3', 'CD2/03.mp3', 'cover.jpg']), `${archive}: the audio files and the real cover picture, wrapper folder removed (${names.join(', ')})`);
+  check(r.images === 1 && r.skipped === 4, `${archive}: one picture kept, four files skipped (${r.images}, ${r.skipped})`);
+  const types = r.skippedTypes || {};
+  check(types.txt === 1 && types.sh === 1 && types.png === 1 && types.mp3 === 1, `${archive}: skipped files are broken down by type (${JSON.stringify(types)})`);
+  check(r.hasReport === true, `${archive}: a report of the skipped files was saved`);
+  const report = await fetch(`${BASE}/api/upload/report?relPath=${encodeURIComponent(r.path)}&filename=${encodeURIComponent(archive)}`);
+  const reportText = await report.text();
+  check(report.status === 200 && /text\/plain/.test(report.headers.get('content-type')) && reportText.includes('readme.txt') && reportText.includes('run.sh') && !reportText.includes('cover.jpg'), `${archive}: the report lists what was left out`);
+  const tracksOfAlbum = (await (await fetch(`${BASE}/api/tracks?dir=${encodeURIComponent('uploads/' + title)}`)).json()).tracks;
+  const art = await fetch(`${BASE}/api/art?p=${encodeURIComponent(tracksOfAlbum[0].path)}`);
+  check(art.status === 200 && art.headers.get('content-type') === 'image/jpeg', `${archive}: the folder picture is the cover of its tracks (${art.status})`);
+  check(!tracksOfAlbum.some((t) => t.path.endsWith('.jpg')) && !(await (await fetch(`${BASE}/api/browse?dir=${encodeURIComponent('uploads/' + title)}`)).text()).includes('cover.jpg'), `${archive}: pictures are not listed as library files`);
   check(walk(dir).every((p) => !fs.lstatSync(p).isSymbolicLink()), `${archive}: no symlinks`);
   check(fs.readdirSync(dir).every((n) => !n.startsWith('.')), `${archive}: no scratch folders left behind`);
 }
@@ -111,16 +122,37 @@ for (const [archive, title] of [['album.zip', 'Zip Album'], ['album.7z', '7z Alb
   check(walk(path.join(MUSIC, 'uploads', 'Junk')).length === 0, 'and nothing is stored');
 }
 
+// ---- 3b. formats a browser cannot play are converted by ffmpeg to FLAC and stream with ranges
+{
+  const sess = await (await fetch(`${BASE}/api/session`)).json();
+  check(sess.ffmpeg === true, 'the server found ffmpeg');
+  const names = ['song.wma', 'song.wv', 'song.mka', 'song.flv'];
+  const up = createUploader({ transport: realTransport, storage: memoryStorage() });
+  const results = await up.uploadBatch(names.map((n) => new File([fs.readFileSync(path.join(FIX, 'ff', n))], n)), { title: 'Converted' });
+  check(results.every((r) => r.state === 'done'), `ffmpeg formats are accepted as audio (${results.map((r) => r.state + (r.error ? ': ' + r.error : '')).join(', ')})`);
+  for (const n of names) {
+    const p = encodeURIComponent(`uploads/Converted/${n}`);
+    const meta = await (await fetch(`${BASE}/api/meta?p=${p}`)).json();
+    check(meta.kind === 'ffmpeg' && meta.native === false && meta.sampleRate > 0, `${n}: detected and probed (${meta.kind}, ${meta.sampleRate} Hz)`);
+    if (n !== 'song.flv') check(meta.title === 'Windows' && meta.artist === 'Redmond', `${n}: tags come from ffprobe (${meta.title} / ${meta.artist})`);
+    const res = await fetch(`${BASE}/api/stream?p=${p}`);
+    const body = Buffer.from(await res.arrayBuffer());
+    check(res.status === 200 && res.headers.get('content-type') === 'audio/flac' && body.subarray(0, 4).toString() === 'fLaC', `${n}: streamed as FLAC (${res.status}, ${res.headers.get('content-type')})`);
+    const part = await fetch(`${BASE}/api/stream?p=${p}`, { headers: { Range: 'bytes=0-3' } });
+    check(part.status === 206 && (await part.text()) === 'fLaC', `${n}: the converted file supports range requests`);
+  }
+}
+
 // ---- 4. nothing is left staged, and the uploads are really in the library
 {
-  check(walk(path.join(MUSIC, 'uploads', '.uploads')).length === 0, 'the staging area is empty');
+  check(walk(path.join(MUSIC, 'uploads', '.uploads')).filter((p) => !p.includes('/reports/')).length === 0, 'the staging area holds nothing but the skipped-file reports');
   check(fs.existsSync('/e2e/uploads-host/.uploads'), 'staging lives inside the uploads folder (the same disk as the result)');
   check(!fs.existsSync(path.join(MUSIC, '.uploads')), 'nothing is staged on the library disk');
   const hostCopy = '/e2e/uploads-host/Big/big.mp3';
   check(fs.existsSync(hostCopy) && sha(fs.readFileSync(hostCopy)) === sha(fs.readFileSync(path.join(FIX, 'big.mp3'))), 'the file is in the uploads folder on the host');
   const res = await fetch(`${BASE}/api/tracks`);
   const { tracks } = await res.json();
-  check(tracks.length === 7, `the library lists 7 tracks (got ${tracks.length})`);
+  check(tracks.length === 11, `the library lists 11 tracks (got ${tracks.length})`);
   const first = tracks.find((t) => t.path.endsWith('big.mp3'));
   const meta = await (await fetch(`${BASE}/api/meta?p=${encodeURIComponent(first.path)}`)).json();
   check(meta.kind === 'mp3', 'an uploaded file can be opened');

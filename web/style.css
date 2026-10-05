@@ -54,6 +54,7 @@ input[type="password"], input[type="number"], select {
 }
 .primary, .secondary { min-height: 44px; padding: 0 18px; border-radius: 10px; font-weight: 600; }
 .primary { background: var(--accent); color: #fff; }
+a.btn { display: grid; place-items: center; text-decoration: none; }
 .primary:disabled { opacity: .45; cursor: default; }
 .secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
 .secondary:disabled { opacity: .45; cursor: default; }

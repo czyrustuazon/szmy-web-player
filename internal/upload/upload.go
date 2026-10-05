@@ -34,9 +34,11 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +69,7 @@ var (
 	ErrOverrun     = errors.New("chunk goes past the declared file size")
 	ErrIncomplete  = errors.New("upload incomplete; keep sending chunks from the current offset")
 	ErrUnsupported = errors.New("7z archives are not supported on this server")
+	ErrNoReport    = errors.New("there is no list of skipped files for this upload")
 )
 
 // OffsetMismatchError means the caller's offset disagrees with the bytes on
@@ -109,8 +112,14 @@ type Status struct {
 	Error        string `json:"error,omitempty"`
 	ResumeOffset int64  `json:"resumeOffset,omitempty"`
 	Tracks       int    `json:"tracks,omitempty"`  // audio files added
-	Skipped      int    `json:"skipped,omitempty"` // non-audio files dropped from an archive
+	Images       int    `json:"images,omitempty"`  // cover images kept (they become cover art)
+	Skipped      int    `json:"skipped,omitempty"` // other files dropped from an archive
 	Path         string `json:"path,omitempty"`    // library path of the file or folder that was added
+
+	// What was dropped, by file type ("jpg": 927, "txt": 66, ...), and whether the full list
+	// of dropped files can be fetched with Report.
+	SkippedTypes map[string]int `json:"skippedTypes,omitempty"`
+	HasReport    bool           `json:"hasReport,omitempty"`
 }
 
 // ExecFunc runs an external command (7z) and returns combined output.
@@ -619,8 +628,8 @@ func (m *Manager) runArchive(key, clean, destDir, stagingPath, metaPath string, 
 		return
 	}
 
-	kept, skipped := prune(tmp)
-	if kept == 0 {
+	pr := prune(tmp)
+	if pr.Tracks == 0 {
 		fail("%s contains no audio files", filepath.Base(meta.Filename))
 		discard(stagingPath, metaPath)
 		return
@@ -639,7 +648,12 @@ func (m *Manager) runArchive(key, clean, destDir, stagingPath, metaPath string, 
 	}
 
 	discard(stagingPath, metaPath)
-	m.setStatus(key, Status{State: Done, BytesWritten: size, TotalBytes: size, Tracks: kept, Skipped: skipped, Path: clean})
+	done := Status{State: Done, BytesWritten: size, TotalBytes: size, Tracks: pr.Tracks, Images: pr.Images, Skipped: len(pr.Skipped), Path: clean}
+	if len(pr.Skipped) > 0 {
+		done.SkippedTypes = countTypes(pr.Skipped)
+		done.HasReport = m.writeReport(m.sessionKey(clean, meta.Filename), meta.Filename, pr.Skipped) == nil
+	}
+	m.setStatus(key, done)
 }
 
 // StatusOf reports a tracked completion. found is false if nothing is tracked
@@ -789,11 +803,46 @@ func writeZipEntry(f *zip.File, target string, budget int64) (int64, error) {
 	return n, nil
 }
 
-// prune keeps only regular audio files below dir: symlinks, devices, scripts,
-// images and everything else are removed, then empty folders are removed. It
-// returns how many files were kept and how many were dropped.
-func prune(dir string) (kept, skipped int) {
+// maxImagesPerFolder bounds the pictures kept per folder: enough for a cover (and a back
+// cover), not hundreds of booklet scans.
+const maxImagesPerFolder = 3
+
+var imageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true}
+
+// isImage is true for a real picture: a picture extension and picture content.
+func isImage(p string) bool {
+	if !library.IsImageName(p) {
+		return false
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(f, buf)
+	return imageTypes[http.DetectContentType(buf[:n])]
+}
+
+type pruneResult struct {
+	Tracks  int      // audio files kept
+	Images  int      // pictures kept
+	Skipped []string // everything dropped, as slash-separated paths relative to the folder, sorted
+}
+
+// prune reduces dir to what a music library wants: regular audio files, plus up to
+// maxImagesPerFolder real pictures per folder (the best cover candidates, see
+// library.RankImages) to serve as cover art. Symlinks, scripts, text files, thumbnails and
+// everything else are removed, then empty folders are removed.
+func prune(dir string) pruneResult {
+	var res pruneResult
 	var dirs []string
+	pics := map[string][]string{} // folder -> names of the pictures in it
+	drop := func(p string) {
+		os.Remove(p)
+		rel, _ := filepath.Rel(dir, p)
+		res.Skipped = append(res.Skipped, filepath.ToSlash(rel))
+	}
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
@@ -801,18 +850,93 @@ func prune(dir string) (kept, skipped int) {
 			if p != dir {
 				dirs = append(dirs, p)
 			}
-		case d.Type().IsRegular() && isAudio(p):
-			kept++
+		case !d.Type().IsRegular():
+			drop(p)
+		case isAudio(p):
+			res.Tracks++
+		case isImage(p):
+			pics[filepath.Dir(p)] = append(pics[filepath.Dir(p)], d.Name())
 		default:
-			os.Remove(p)
-			skipped++
+			drop(p)
 		}
 		return nil
 	})
+	folders := make([]string, 0, len(pics))
+	for f := range pics {
+		folders = append(folders, f)
+	}
+	sort.Strings(folders)
+	for _, f := range folders {
+		for i, name := range library.RankImages(pics[f]) {
+			if i < maxImagesPerFolder {
+				res.Images++
+			} else {
+				drop(filepath.Join(f, name))
+			}
+		}
+	}
 	for i := len(dirs) - 1; i >= 0; i-- {
 		os.Remove(dirs[i]) // only succeeds when empty
 	}
-	return kept, skipped
+	sort.Strings(res.Skipped)
+	return res
+}
+
+// typeOf names the kind of a dropped file for the summary: its extension, "no extension", or
+// "other" when what follows the last dot is not a plausible extension (a folder-ish name with a
+// dot in it).
+func typeOf(rel string) string {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(rel), "."))
+	switch {
+	case ext == "":
+		return "no extension"
+	case len(ext) > 6 || strings.IndexFunc(ext, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') }) >= 0:
+		return "other"
+	}
+	return ext
+}
+
+func countTypes(skipped []string) map[string]int {
+	out := map[string]int{}
+	for _, rel := range skipped {
+		out[typeOf(rel)]++
+	}
+	return out
+}
+
+const maxReportLines = 20000
+
+func (m *Manager) reportPath(key string) string { return filepath.Join(m.staging, "reports", key+".txt") }
+
+// writeReport saves the list of files an archive upload dropped, so you can see exactly what
+// was left out.
+func (m *Manager) writeReport(key, filename string, skipped []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d files from %s were not added to the library.\n", len(skipped), filename)
+	fmt.Fprintf(&b, "Only audio files and up to %d cover pictures per folder are kept.\n\n", maxImagesPerFolder)
+	for i, rel := range skipped {
+		if i == maxReportLines {
+			fmt.Fprintf(&b, "... and %d more\n", len(skipped)-maxReportLines)
+			break
+		}
+		b.WriteString(rel + "\n")
+	}
+	if err := os.MkdirAll(filepath.Dir(m.reportPath(key)), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(m.reportPath(key), []byte(b.String()), 0o644)
+}
+
+// Report returns the path of the saved list of files dropped from an archive upload.
+func (m *Manager) Report(relPath, filename string) (string, error) {
+	if err := validName(filename); err != nil {
+		return "", err
+	}
+	p := m.reportPath(m.sessionKey(library.CleanRel(relPath), filename))
+	if _, err := os.Stat(p); err != nil {
+		return "", ErrNoReport
+	}
+	return p, nil
 }
 
 // flattenWrapper moves a lone top-level folder's contents up into dir, for as
@@ -890,6 +1014,7 @@ func (m *Manager) PurgeExpired(maxAge time.Duration) (int, error) {
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
 	}
+	defer m.purgeReports(maxAge)
 	if err != nil {
 		return 0, fmt.Errorf("reading upload staging folder: %w", err)
 	}
@@ -922,6 +1047,17 @@ func (m *Manager) PurgeExpired(maxAge time.Duration) (int, error) {
 		purged++
 	}
 	return purged, nil
+}
+
+// purgeReports removes saved skip lists older than maxAge (all of them if maxAge <= 0).
+func (m *Manager) purgeReports(maxAge time.Duration) {
+	des, _ := os.ReadDir(filepath.Join(m.staging, "reports"))
+	cutoff := time.Now().Add(-maxAge)
+	for _, de := range des {
+		if info, err := de.Info(); err == nil && (maxAge <= 0 || !info.ModTime().After(cutoff)) {
+			os.Remove(filepath.Join(m.staging, "reports", de.Name()))
+		}
+	}
 }
 
 // RunJanitor purges abandoned sessions older than maxAge every interval until

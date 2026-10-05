@@ -308,8 +308,8 @@ func TestDeleteErrors(t *testing.T) {
 	if l.ReadOnly() {
 		t.Skip("read-only temp dir")
 	}
-	if _, err := l.Delete("nested"); !errors.Is(err, ErrNotFile) {
-		t.Errorf("directory: %v", err)
+	if _, err := l.Delete(""); !errors.Is(err, ErrBadName) {
+		t.Errorf("root: %v", err)
 	}
 	if _, err := l.Delete("missing.mp3"); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing: %v", err)
@@ -397,5 +397,62 @@ func TestCleanRel(t *testing.T) {
 		if got := CleanRel(in); got != want {
 			t.Errorf("%q: got %q want %q", in, got, want)
 		}
+	}
+}
+
+func TestDeleteAndUndoFolder(t *testing.T) {
+	l, root := newLib(t)
+	if l.ReadOnly() {
+		t.Skip("read-only temp dir")
+	}
+	tr, err := l.Delete("nested")
+	if err != nil || !tr.IsDir {
+		t.Fatalf("delete folder: %+v %v", tr, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "nested")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("folder still there: %v", err)
+	}
+	if _, err := l.Undo(tr.Token); err != nil {
+		t.Fatalf("undo folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "nested", "deep", "song.mp3")); err != nil {
+		t.Errorf("contents not restored: %v", err)
+	}
+}
+
+func TestRenameFolder(t *testing.T) {
+	l, root := newLib(t)
+	if l.ReadOnly() {
+		t.Skip("read-only temp dir")
+	}
+	got, err := l.Rename("nested/deep", "deeper")
+	if err != nil || got != "nested/deeper" {
+		t.Fatalf("rename: %q %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "nested", "deeper", "song.mp3")); err != nil {
+		t.Errorf("contents not moved: %v", err)
+	}
+	if got, err = l.Rename("nested", "Nested2"); err != nil || got != "Nested2" {
+		t.Errorf("top-level rename: %q %v", got, err)
+	}
+	for _, bad := range []string{"", ".", "..", ".x", "a/b", `a`, " pad"} {
+		if _, err := l.Rename("Nested2", bad); !errors.Is(err, ErrBadName) {
+			t.Errorf("name %q: %v", bad, err)
+		}
+	}
+	if _, err := l.Rename("", "x"); !errors.Is(err, ErrBadName) {
+		t.Errorf("root: %v", err)
+	}
+	if _, err := l.Rename("alpha.wav", "x"); !errors.Is(err, ErrNotDir) {
+		t.Errorf("file: %v", err)
+	}
+	if _, err := l.Rename("missing", "x"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Rename("other", "Nested2"); !errors.Is(err, ErrExists) {
+		t.Errorf("clash: %v", err)
 	}
 }

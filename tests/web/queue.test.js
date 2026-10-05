@@ -138,3 +138,20 @@ test('empty queue is safe', () => {
   assert.equal(q.current(), null);
   assert.equal(q.peekNext(), null);
 });
+
+test('removeUnder drops a folder and hands off when the current track was inside it', () => {
+  const q = new Queue();
+  q.setQueue([{ path: 'a/1' }, { path: 'a/2' }, { path: 'b/1' }], 0);
+  const r = q.removeUnder('a');
+  assert.equal(r.wasCurrent, true);
+  assert.equal(r.next.path, 'b/1');
+  assert.equal(q.length, 1);
+  assert.equal(q.removeUnder('zzz').wasCurrent, false);
+});
+
+test('renameUnder re-points queued tracks and ignores look-alike prefixes', () => {
+  const q = new Queue();
+  q.setQueue([{ path: 'a/1' }, { path: 'ab/1' }], 0);
+  q.renameUnder('a', 'c');
+  assert.deepEqual(q.items.map((t) => t.path), ['c/1', 'ab/1']);
+});

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,13 +30,25 @@ func TestZipExtractsOnlyAudioAndUnwrapsTheTopFolder(t *testing.T) {
 	})
 	send(t, m, rel, "great.zip", archive, 64)
 	st := finish(t, m, rel, "great.zip", len(archive))
-	if st.State != Done || st.Tracks != 2 || st.Skipped != 3 || st.Path != rel {
+	if st.State != Done || st.Tracks != 2 || st.Images != 1 || st.Skipped != 2 || st.Path != rel {
 		t.Fatalf("status: %+v", st)
 	}
+	if !reflect.DeepEqual(st.SkippedTypes, map[string]int{"txt": 1, "sh": 1}) || !st.HasReport {
+		t.Errorf("breakdown of what was skipped: %+v", st)
+	}
 	files := listTree(t, filepath.Join(root, "uploads", "Great Album"))
-	want := map[string]bool{"01 One.mp3": true, "Disc 2/02 Two.mp3": true}
-	if len(files) != 2 || !want[files[0]] || !want[files[1]] {
-		t.Fatalf("expected the wrapper folder to be unwrapped and junk dropped, got %v", files)
+	want := map[string]bool{"01 One.mp3": true, "Disc 2/02 Two.mp3": true, "cover.jpg": true}
+	if len(files) != 3 || !want[files[0]] || !want[files[1]] || !want[files[2]] {
+		t.Fatalf("expected the wrapper folder to be unwrapped, the cover kept and junk dropped, got %v", files)
+	}
+	// The full list of what was left out can be read back.
+	rp, err := m.Report(rel, "great.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _ := os.ReadFile(rp)
+	if !strings.Contains(string(text), "2 files from great.zip") || !strings.Contains(string(text), "notes.txt\n") || !strings.Contains(string(text), "run.sh\n") || strings.Contains(string(text), "cover.jpg") {
+		t.Errorf("report:\n%s", text)
 	}
 	// No scratch folders or staged bytes are left behind.
 	entries, _ := os.ReadDir(filepath.Join(root, "uploads", "Great Album"))
@@ -44,8 +57,11 @@ func TestZipExtractsOnlyAudioAndUnwrapsTheTopFolder(t *testing.T) {
 			t.Errorf("hidden leftover %s", e.Name())
 		}
 	}
-	if staged, _ := os.ReadDir(filepath.Join(root, "uploads", StagingDirName)); len(staged) != 0 {
-		t.Errorf("staging should be empty: %v", staged)
+	staged, _ := os.ReadDir(filepath.Join(root, "uploads", StagingDirName))
+	for _, e := range staged {
+		if e.Name() != "reports" { // the saved list of skipped files is meant to stay
+			t.Errorf("staging should hold nothing but the report: %v", staged)
+		}
 	}
 }
 
@@ -382,7 +398,7 @@ func TestSevenZipUpload(t *testing.T) {
 	payload := []byte("pretend this is a 7z archive")
 	send(t, m, rel, "packed.7z", payload, 10)
 	st := finish(t, m, rel, "packed.7z", len(payload))
-	if st.State != Done || st.Tracks != 1 || st.Skipped != 1 {
+	if st.State != Done || st.Tracks != 1 || st.Skipped != 1 || st.SkippedTypes["png"] != 1 {
 		t.Fatalf("status: %+v", st)
 	}
 	if strings.Join(calls, ",") != "7z t,7z x" {
@@ -484,13 +500,13 @@ func TestPruneKeepsOnlyRegularAudioFiles(t *testing.T) {
 	os.WriteFile(outside, mp3, 0o644)
 	linked := os.Symlink(outside, filepath.Join(dir, "link.mp3")) == nil // a symlink to real audio
 
-	kept, skipped := prune(dir)
-	wantKept, wantSkipped := 4, 3 // a.mp3, b.flac, odd.mp3, disguised | readme.txt, c.png, link.mp3
+	res := prune(dir)
+	wantSkipped := []string{"drop/readme.txt", "drop/sub/c.png", "link.mp3"} // a fake picture, a text file and a link
 	if !linked {
-		wantSkipped--
+		wantSkipped = wantSkipped[:2]
 	}
-	if kept != wantKept || skipped != wantSkipped {
-		t.Errorf("kept %d skipped %d, want %d %d", kept, skipped, wantKept, wantSkipped)
+	if res.Tracks != 4 || res.Images != 0 || !reflect.DeepEqual(res.Skipped, wantSkipped) { // a.mp3, b.flac, odd.mp3, disguised
+		t.Errorf("tracks %d images %d skipped %v", res.Tracks, res.Images, res.Skipped)
 	}
 	if exists(filepath.Join(dir, "drop")) {
 		t.Error("folders emptied by pruning must be removed")
@@ -501,8 +517,106 @@ func TestPruneKeepsOnlyRegularAudioFiles(t *testing.T) {
 	if !exists(outside) {
 		t.Error("pruning must not follow a symlink and delete its target")
 	}
-	if kept, skipped := prune(filepath.Join(dir, "does-not-exist")); kept != 0 || skipped != 0 {
-		t.Errorf("missing dir: %d %d", kept, skipped)
+	if res := prune(filepath.Join(dir, "does-not-exist")); res.Tracks != 0 || res.Images != 0 || len(res.Skipped) != 0 {
+		t.Errorf("missing dir: %+v", res)
+	}
+}
+
+var (
+	jpegBytes = []byte("\xff\xd8\xff\xe0 jpeg")
+	pngBytes  = []byte("\x89PNG\r\n\x1a\n rest of a picture")
+)
+
+func TestPruneKeepsTheBestFewPicturesPerFolder(t *testing.T) {
+	dir := t.TempDir()
+	for p, data := range map[string][]byte{
+		"A/01.mp3": mp3, "A/cover.jpg": jpegBytes, "A/folder.png": pngBytes, "A/back.jpg": jpegBytes,
+		"A/scan1.jpg": jpegBytes, "A/scan2.jpg": jpegBytes, "A/fake.jpg": []byte("not a picture"),
+		"A/Scans/page.jpg": jpegBytes, // another folder: its own allowance
+		"B/02.mp3":         mp3, "B/Thumbs.db": []byte("x"), "B/pic.bmp": []byte("BM"),
+	} {
+		os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755)
+		os.WriteFile(filepath.Join(dir, p), data, 0o644)
+	}
+	res := prune(dir)
+	if res.Tracks != 2 || res.Images != 4 {
+		t.Fatalf("tracks %d images %d", res.Tracks, res.Images)
+	}
+	for _, kept := range []string{"A/cover.jpg", "A/folder.png", "A/back.jpg", "A/Scans/page.jpg"} {
+		if !exists(filepath.Join(dir, kept)) {
+			t.Errorf("%s should be kept (cover names first, three per folder)", kept)
+		}
+	}
+	want := "A/fake.jpg A/scan1.jpg A/scan2.jpg B/Thumbs.db B/pic.bmp"
+	if got := strings.Join(res.Skipped, " "); got != want {
+		t.Errorf("skipped %q, want %q", got, want)
+	}
+	for _, gone := range res.Skipped {
+		if exists(filepath.Join(dir, gone)) {
+			t.Errorf("%s should have been removed", gone)
+		}
+	}
+}
+
+func TestTypeOfNamesWhatWasSkipped(t *testing.T) {
+	for in, want := range map[string]string{
+		"a/b/Cover.JPG": "jpg", "notes.txt": "txt", "Makefile": "no extension", "a.b/readme": "no extension",
+		"weird.this-is-not-an-extension": "other", "x.ünï": "other", "archive.tar.gz": "gz", ".hidden": "hidden",
+	} {
+		if got := typeOf(in); got != want {
+			t.Errorf("typeOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+	got := countTypes([]string{"a.jpg", "b.JPG", "c.txt", "d"})
+	if !reflect.DeepEqual(got, map[string]int{"jpg": 2, "txt": 1, "no extension": 1}) {
+		t.Errorf("counts: %v", got)
+	}
+}
+
+func TestReportErrorsAndPurging(t *testing.T) {
+	m, root := newMgr(t)
+	rel := start(t, m, "R")
+	if _, err := m.Report(rel, "none.zip"); !errors.Is(err, ErrNoReport) {
+		t.Errorf("no report yet: %v", err)
+	}
+	if _, err := m.Report(rel, "../x"); !errors.Is(err, ErrBadName) {
+		t.Errorf("bad name: %v", err)
+	}
+
+	// A long list is capped, and says so.
+	many := make([]string, maxReportLines+5)
+	for i := range many {
+		many[i] = fmt.Sprintf("f%06d.txt", i)
+	}
+	key := m.sessionKey(rel, "big.zip")
+	if err := m.writeReport(key, "big.zip", many); err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.Report(rel, "big.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.HasSuffix(string(data), "... and 5 more\n") || strings.Contains(string(data), "f020004.txt") {
+		t.Errorf("tail of report: %q", data[len(data)-60:])
+	}
+
+	// Reports follow the janitor: fresh ones stay, old ones go.
+	m.PurgeExpired(time.Hour)
+	if _, err := m.Report(rel, "big.zip"); err != nil {
+		t.Errorf("a fresh report must survive: %v", err)
+	}
+	backdate(t, p, 72*time.Hour)
+	m.PurgeExpired(time.Hour)
+	if _, err := m.Report(rel, "big.zip"); !errors.Is(err, ErrNoReport) {
+		t.Errorf("an old report must be purged: %v", err)
+	}
+	// A missing reports folder is fine, and a blocked one is reported.
+	m.purgeReports(0)
+	os.RemoveAll(filepath.Join(root, "uploads", StagingDirName, "reports"))
+	os.WriteFile(filepath.Join(root, "uploads", StagingDirName, "reports"), []byte("a file, not a folder"), 0o644)
+	if err := m.writeReport(key, "big.zip", []string{"x"}); err == nil {
+		t.Error("an unwritable reports folder must be an error")
 	}
 }
 
@@ -692,5 +806,17 @@ func TestFormatSize(t *testing.T) {
 	}
 	if got := fmtSize(5 << 20); got != "5 MB" {
 		t.Errorf("%s", got)
+	}
+}
+
+func TestIsImageNeedsPictureNameAndContent(t *testing.T) {
+	dir := t.TempDir()
+	for name, data := range map[string][]byte{"ok.jpg": jpegBytes, "ok.png": pngBytes, "fake.jpg": []byte("hello"), "pic.txt": jpegBytes} {
+		os.WriteFile(filepath.Join(dir, name), data, 0o644)
+	}
+	for name, want := range map[string]bool{"ok.jpg": true, "ok.png": true, "fake.jpg": false, "pic.txt": false, "missing.jpg": false} {
+		if got := isImage(filepath.Join(dir, name)); got != want {
+			t.Errorf("isImage(%s) = %v, want %v", name, got, want)
+		}
 	}
 }

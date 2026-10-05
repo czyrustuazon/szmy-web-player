@@ -78,4 +78,7 @@ if [ "$(docker inspect -f '{{.Architecture}}' "$IMG")" = "amd64" ]; then
   echo "vgmstream-cli present"
 fi
 
+docker run --rm --entrypoint sh "$IMG" -c 'command -v ffmpeg && command -v ffprobe' >/dev/null
+echo "ffmpeg and ffprobe present"
+
 echo "smoke test passed"

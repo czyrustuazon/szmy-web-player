@@ -119,3 +119,59 @@ func TestPaths(t *testing.T) {
 		t.Fatal("unexpected file names")
 	}
 }
+
+func googleEnv(extra map[string]string) func(string) string {
+	m := map[string]string{
+		"MP_GOOGLE_CLIENT_ID": "id.apps.googleusercontent.com", "MP_GOOGLE_CLIENT_SECRET": "sec",
+		"MP_ALLOWED_EMAILS": "Me@Gmail.com, you@gmail.com", "MP_PUBLIC_URL": "https://music.example.org/",
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return env(m)
+}
+
+func TestGoogleSignIn(t *testing.T) {
+	c, err := Load(googleEnv(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.GoogleEnabled || c.AuthDisabled {
+		t.Fatalf("Google sign-in must turn the login on even without a password: %+v", c)
+	}
+	if strings.Join(c.AllowedEmails, ",") != "me@gmail.com,you@gmail.com" || c.PublicURL != "https://music.example.org" {
+		t.Fatalf("allowlist / public url: %+v", c)
+	}
+	if !c.CookieSecure {
+		t.Error("an https public address means a Secure cookie")
+	}
+	if c.GoogleRedirectURL() != "https://music.example.org/auth/google/callback" {
+		t.Errorf("redirect: %s", c.GoogleRedirectURL())
+	}
+	c, err = Load(googleEnv(map[string]string{"MP_PUBLIC_URL": "http://localhost:8787"}))
+	if err != nil || c.CookieSecure || c.GoogleRedirectURL() != "http://localhost:8787/auth/google/callback" {
+		t.Errorf("http public address: %+v %v", c, err)
+	}
+	c, _ = Load(env(nil))
+	if c.GoogleEnabled || len(c.AllowedEmails) != 0 {
+		t.Errorf("off by default: %+v", c)
+	}
+}
+
+func TestGoogleSignInMisconfiguration(t *testing.T) {
+	cases := map[string]map[string]string{
+		"no secret":         {"MP_GOOGLE_CLIENT_SECRET": ""},
+		"no client id":      {"MP_GOOGLE_CLIENT_ID": ""},
+		"no allowlist":      {"MP_ALLOWED_EMAILS": " "},
+		"no public url":     {"MP_PUBLIC_URL": ""},
+		"public url scheme": {"MP_PUBLIC_URL": "music.example.org"},
+		"public url ftp":    {"MP_PUBLIC_URL": "ftp://music.example.org"},
+		"public url path":   {"MP_PUBLIC_URL": "https://example.org/music"},
+		"public url junk":   {"MP_PUBLIC_URL": "https://exa mple.org"},
+	}
+	for name, m := range cases {
+		if _, err := Load(googleEnv(m)); err == nil {
+			t.Errorf("%s: a half-configured Google sign-in must stop startup, never let everyone in", name)
+		}
+	}
+}

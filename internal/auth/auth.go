@@ -61,6 +61,12 @@ func (a *Auth) Login(password string) (string, bool) {
 	if !a.disabled && !a.Check(password) {
 		return "", false
 	}
+	return a.NewSession()
+}
+
+// NewSession issues a session token without checking a password, for sign-in methods that
+// have already proved who the user is (Google sign-in).
+func (a *Auth) NewSession() (string, bool) {
 	b := make([]byte, 32)
 	if _, err := randRead(b); err != nil {
 		return "", false

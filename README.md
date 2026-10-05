@@ -43,7 +43,8 @@ make go-run                 # builds, then runs against ./music and ./data
 ```
 
 Install [`vgmstream-cli`](https://github.com/vgmstream/vgmstream/releases) and put it on
-`PATH` (or set `MP_VGMSTREAM_BIN`) for game formats. Without it everything else still works.
+`PATH` (or set `MP_VGMSTREAM_BIN`) for game formats, and `ffmpeg` (with `ffprobe`) for WMA, APE and
+similar formats. Without them everything else still works. The Docker image has both.
 
 ## Configuration
 
@@ -62,7 +63,7 @@ All settings are environment variables.
 | `MP_MIN_FREE_MB` | `1024` | Free space that must remain on the library disk after an upload (`0` = no check) |
 | `MP_UPLOAD_TTL_HOURS` | `48` | An upload nobody resumed is cleaned up after this long |
 | `MP_CACHE_MB` | `2048` | Transcode cache size (least recently used files are evicted) |
-| `MP_TRANSCODE_WORKERS` | `2` | Parallel vgmstream decodes |
+| `MP_TRANSCODE_WORKERS` | `2` | Parallel vgmstream and ffmpeg conversions |
 | `MP_TRASH_MINUTES` | `10` | How long a deleted file stays restorable |
 | `MP_VGMSTREAM_BIN` | `vgmstream-cli` | Path or name of the vgmstream binary |
 | `PUID` / `PGID` | `1000` | Docker only: user and group the app runs as |
@@ -78,8 +79,11 @@ are stored, see [Where uploads are stored](#where-uploads-are-stored)) and `/dat
 |---|---|
 | MP3, FLAC, WAV, Ogg Vorbis, Opus, M4A/AAC | Streamed as-is with HTTP Range (seeking works). Opus on browsers without Ogg Opus support is transcoded automatically |
 | BRSTM, BCSTM, BFSTM, ADPCM and other vgmstream formats | Rendered once to WAV by `vgmstream-cli`, cached, then streamed |
+| WMA, WMV/ASF, APE, WavPack, TTA, Musepack, DSD, AIFF, MKA, FLV, AMR, AC3/DTS and other video/audio containers | Converted once to FLAC by `ffmpeg` (lossless, seekable), cached, then streamed. Title, artist, album, genre, year and track come from `ffprobe` |
 
-The format is detected from file content first and the extension second, like szmy.
+The format is detected from file content first and the extension second, like szmy. MIDI is not
+supported (it has no audio to decode). Converted files are cached under `MP_DATA_DIR/cache`
+(`MP_CACHE_MB` is the limit for each cache) and a conversion that takes over 15 minutes is stopped.
 
 ### Loop points
 
@@ -102,7 +106,7 @@ Settings choose what happens at the end of the intro: **loop N times then fade o
 | Delete with automatic advance to the next track | One tap on the trash button, plus a 5 s **Undo** (files go to a hidden trash first) |
 | Tap-to-return playlist cursor | Tap the title in the player, or the locate button |
 | Resume where you left off | Track, position, shuffle, repeat, volume and loop settings persist on the server |
-| Embedded cover art, generic fallback | Same |
+| Embedded cover art, generic fallback | Same, plus a picture from the album folder when the track has none (below) |
 | Scrolling long titles | Marquee ticker |
 | ID3v2 (Latin-1/UTF-8/UTF-16), Vorbis comments, genre `(17)Rock` cleanup, 4-digit year | Same, plus WAV `LIST/INFO`; filename fallback title; CJK font stack |
 | Equalizer bars (80 Hz–12 kHz, log bands, fast rise / half-plus-8 fall) and scope | Same, drawn from a Web Audio analyser; tap to switch |
@@ -140,12 +144,55 @@ Notes:
 
 - The port is published on IPv4 only on purpose. Docker's IPv6 forwarding hides the real client
   address, which would defeat the check.
-- Do not put this behind a public reverse proxy: the check sees the proxy's address, not the visitor's.
+- Do not put this behind a public reverse proxy or tunnel without Google sign-in: the check sees
+  the proxy's address, not the visitor's. See [the Cloudflare Tunnel section](#reaching-it-through-a-cloudflare-tunnel-google-sign-in).
 - A refusal is logged once per address per ten minutes, so a scanner cannot flood the log.
 - "At home" means the home network's private address ranges. A Tailscale device that is away from home
   reaches you through the tailnet and is allowed like any tailnet device (or only if it is a known
   device, when `MP_KNOWN_DEVICES` is set). To allow the tailnet but not direct home-network
   connections, use `MP_ALLOWED_NETS=tailscale`.
+
+## Reaching it through a Cloudflare Tunnel (Google sign-in)
+
+A tunnel makes the player reachable from anywhere, so the network allowlist above stops being the
+lock: every visitor arrives from `cloudflared` on your own machine. **Google sign-in becomes the
+lock instead.** Only the addresses in `MP_ALLOWED_EMAILS` get a session; any other Google account,
+and anyone not signed in, sees nothing but the sign-in page.
+
+1. **Google Cloud console** → APIs & Services → Credentials → *Create credentials* → *OAuth client ID*,
+   type *Web application*. Under *Authorized redirect URIs* add
+   `https://music.haruhi.one/auth/google/callback` (your public address plus `/auth/google/callback`;
+   the player prints the exact value at startup). If asked, set the consent screen up as *External*
+   and add yourself as a test user; the `openid email` scope needs no review.
+2. **`.env`**:
+
+   ```
+   MP_GOOGLE_CLIENT_ID=...apps.googleusercontent.com
+   MP_GOOGLE_CLIENT_SECRET=...
+   MP_ALLOWED_EMAILS=you@gmail.com,someone.else@gmail.com
+   MP_PUBLIC_URL=https://music.haruhi.one
+   ```
+
+   The player refuses to start if any of these is missing, so it can never be left open to every
+   Google account. With `MP_ADMIN_PASSWORD` blank, Google is the only way in; with both set, the
+   login page offers both.
+3. **Tunnel**: in Cloudflare Zero Trust → Networks → Tunnels, add a public hostname
+   `music.haruhi.one` → service `http://localhost:8787` (or `http://<BIND_ADDR>:8787` if you set
+   `BIND_ADDR` to the Tailscale address). Cloudflare provides the HTTPS side; the player sees plain
+   http from the tunnel and marks its cookies Secure because `MP_PUBLIC_URL` is https.
+4. `make up`.
+
+Notes:
+
+- Keep the default `MP_ALLOWED_NETS`. Tunnel connections come from this machine, which `lan` and
+  loopback cover. The player only ever sees that address, so the allowlist adds nothing here and
+  Google sign-in carries all of the protection.
+- The address must be listed exactly (case does not matter), and Google must have verified it.
+  `you+tag@gmail.com` and `y.o.u@gmail.com` are different entries from `you@gmail.com`.
+- Sessions last 30 days. Remove an address and restart to cut it off; restarting also ends every
+  session.
+- Pointing `music.haruhi.one` at the tunnel replaces its Tailscale DNS record. Other names, such as
+  `animedb.haruhi.one`, are unaffected.
 
 ## Search
 
@@ -177,11 +224,24 @@ same chunked, resumable protocol as `anime-db-stream`:
   so no request is held open for the length of an extraction.
 - A damaged archive is **localised to the bad chunk** (only that part is re-sent). If every chunk
   matches what arrived, the source file itself is bad and is reported as such.
-- Unpacking happens in a hidden scratch folder, and only **audio files** are kept (symlinks,
-  scripts, images and the like are dropped), then a lone wrapper folder is removed and the
-  result is moved into place. Nothing partial ever shows up in the library.
+- Unpacking happens in a hidden scratch folder, and only **audio files** and up to three real
+  **pictures per folder** (cover-named ones first, see below) are kept. Symlinks, scripts, text
+  files and everything else are dropped, then a lone wrapper folder is removed and the result is
+  moved into place. Nothing partial ever shows up in the library.
+- The result says what was dropped, by type (`jpg ×927, txt ×66, ...`), and links to the **full
+  list of skipped files** (`GET /api/upload/report`). Reports are kept next to the staging area
+  and cleaned up with abandoned uploads after `MP_UPLOAD_TTL_HOURS`.
 - Free space is checked **before** the transfer; abandoned partial uploads are cleaned up after
   `MP_UPLOAD_TTL_HOURS`.
+
+### Cover art
+
+A track's embedded picture is used first. If it has none, the player looks in the track's folder
+for an image, preferring `cover`, `folder`, `front`, `album`, `albumart`, `art`, `artwork` and
+`thumb`, then in `Scans`, `Artwork`, `Covers`, `Art`, `Images` or `Booklet` subfolders, then in
+the parent folder (so a multi-disc album's `CD1`/`CD2` share the cover above them). Pictures
+are not listed as files in the library, and only real JPEG, PNG, GIF and WebP images up to
+16 MiB are used; symlinks and hidden files are ignored.
 
 ### Where uploads are stored
 
@@ -213,7 +273,11 @@ proxy, allow request bodies of at least 16 MiB.
   sanitised; nothing is ever overwritten; archive entries cannot escape (Zip Slip) and are
   reduced to audio files; extraction is size-capped against zip bombs (a 7z bomb is limited only
   by the free-space check).
-- Cover art is only served if the bytes really are JPEG/PNG/GIF/WebP, with a sandboxing CSP.
+- Cover art (embedded or from a folder) is only served if the bytes really are JPEG/PNG/GIF/WebP,
+  with a sandboxing CSP.
+- ffmpeg reads untrusted media: it runs with `-protocol_whitelist file` (no network or other
+  protocols can be reached through a crafted playlist or container), without stdin, under a
+  15 minute limit, and its output goes to a private cache.
 - Passwords are stored as salted, iterated SHA-256 hashes. This is a single-user LAN-grade
   login; put it behind HTTPS (and ideally a VPN) if you expose it to the internet.
 

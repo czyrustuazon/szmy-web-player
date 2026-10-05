@@ -40,7 +40,9 @@ RUN mkdir -p /out \
 FROM debian:bookworm-slim
 # 7z unpacks .7z uploads (.zip needs nothing). Debian's package name changed between releases
 # (p7zip-full, then "7zip" providing only a 7zz binary), so try both and make sure `7z` exists.
+# ffmpeg converts WMA, APE, WavPack, WMV, FLV and similar formats to FLAC for playback.
 RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
     && (apt-get install -y --no-install-recommends p7zip-full || apt-get install -y --no-install-recommends 7zip) \
     && (command -v 7z >/dev/null 2>&1 || ln -s "$(command -v 7zz)" /usr/local/bin/7z) \
     && rm -rf /var/lib/apt/lists/*

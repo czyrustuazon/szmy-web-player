@@ -5,7 +5,7 @@ import { Visualizer } from './viz.js';
 import { VirtualList } from './ui.js';
 import { initUploadView } from './uploadview.js';
 import { SearchState, SEP, stemOf, dirOf, highlight } from './searchstate.js';
-import { $, fmtTime, icon, escapeHTML, toast, setMarquee, debounce } from './util.js';
+import { $, kindLabel, fmtTime, icon, escapeHTML, toast, setMarquee, debounce } from './util.js';
 
 const ROW_H = 60;
 const MAX_SKIPS = 5; // consecutive undecodable tracks before auto-advance gives up
@@ -56,7 +56,7 @@ function renderRow(e) {
   row.className = `row${current ? ' current' : ''}${!e.isDir && !e.playable ? ' dim' : ''}`;
   let sub = '';
   if (!e.isDir) {
-    sub = search.active || state.source === 'favorites' ? dirOf(e.path) : `${(e.kind || 'file').toUpperCase()} · ${fmtSize(e.size)}`;
+    sub = search.active || state.source === 'favorites' ? dirOf(e.path) : `${kindLabel(e.kind, e.path)} · ${fmtSize(e.size)}`;
   }
   const name = e.isDir ? e.name : e.playable ? stem(e.name) : e.name;
   let nameHTML = escapeHTML(name);
@@ -69,7 +69,10 @@ function renderRow(e) {
   }
   let actions = '';
   if (e.isDir) {
-    actions = icon('chev');
+    if (state.caps.canDelete && !search.active && state.source !== 'favorites') {
+      actions = `<button class="ib" data-act="rename" aria-label="Rename folder">${icon('edit')}</button><button class="ib del" data-act="del" aria-label="Delete folder">${icon('trash')}</button>`;
+    }
+    actions += icon('chev');
   } else if (e.playable) {
     actions = `<button class="ib fav${e.fav ? ' on' : ''}" data-act="fav" aria-label="${e.fav ? 'Remove from favorites' : 'Add to favorites'}">${icon(e.fav ? 'heart-fill' : 'heart')}</button>`;
     if (state.caps.canDelete) actions += `<button class="ib del" data-act="del" aria-label="Delete">${icon('trash')}</button>`;
@@ -86,6 +89,7 @@ $('#list').addEventListener('click', (ev) => {
   const act = ev.target.closest('button')?.dataset.act;
   if (act === 'fav') return void toggleFav(e);
   if (act === 'del') return void deleteTrack(e);
+  if (act === 'rename') return void renameFolder(e);
   if (e.isDir) return void loadDir(e.path);
   if (!e.playable) return void toast('Not an audio file');
   playEntry(e);
@@ -367,6 +371,7 @@ async function toggleFav(e) {
   if (state.source === 'favorites' && !on) {
     state.favTracks = state.favTracks.filter((t) => t.path !== e.path);
     search.remove(e.path);
+  if (e.isDir) state.libTracks = null;
     renderHeader();
     list.setItems(currentItems(), { keepScroll: true });
     updateEmpty();
@@ -383,7 +388,24 @@ async function toggleFav(e) {
   }
 }
 
+async function renameFolder(e) {
+  const name = prompt('Rename folder', e.name)?.trim();
+  if (!name || name === e.name) return;
+  let res;
+  try {
+    res = await api.renameFolder(e.path, name);
+  } catch (err) {
+    return void toast(err.message);
+  }
+  queue.renameUnder(e.path, res.path);
+  if (state.meta?.path.startsWith(`${e.path}/`)) state.meta.path = res.path + state.meta.path.slice(e.path.length);
+  state.libTracks = null;
+  await reloadView();
+  toast(`Renamed to ${name}`);
+}
+
 async function deleteTrack(e) {
+  if (e.isDir && !confirm(`Delete folder "${e.name}" and everything in it?`)) return;
   const wasPlaying = player.playing;
   let res;
   try {
@@ -391,7 +413,8 @@ async function deleteTrack(e) {
   } catch (err) {
     return void toast(err.message);
   }
-  const drop = (arr) => arr.filter((t) => t.path !== e.path);
+  const inside = (t) => t.path === e.path || (e.isDir && t.path.startsWith(`${e.path}/`));
+  const drop = (arr) => arr.filter((t) => !inside(t));
   state.entries = drop(state.entries);
   state.favTracks = drop(state.favTracks);
   if (state.libTracks) state.libTracks = drop(state.libTracks);
@@ -400,7 +423,7 @@ async function deleteTrack(e) {
   updateEmpty();
   renderHeader();
 
-  const r = queue.remove(e.path);
+  const r = e.isDir ? queue.removeUnder(e.path) : queue.remove(e.path);
   if (r.wasCurrent) {
     if (r.next) {
       list.refresh();
@@ -411,14 +434,14 @@ async function deleteTrack(e) {
       showNowPlaying(null);
     }
   }
-  toast(`Deleted ${stem(res.name)}`, { action: 'Undo', ms: 5000, onAction: () => undoDelete(res) });
+  toast(`Deleted ${e.isDir ? res.name : stem(res.name)}`, { action: 'Undo', ms: 5000, onAction: () => undoDelete(res) });
 }
 
 async function undoDelete(res) {
   try {
     await api.undo(res.token);
     await reloadView();
-    toast(`Restored ${stem(res.name)}`);
+    toast(`Restored ${res.isDir ? res.name : stem(res.name)}`);
   } catch (err) {
     toast(`Could not undo: ${err.message}`);
   }
@@ -451,9 +474,9 @@ function showNowPlaying(meta) {
   $('#mp-art').src = art;
   $('#fp-art').src = art;
   setMarquee($('#mp-title'), meta.title);
-  $('#mp-sub').textContent = sub || (meta.kind || '').toUpperCase();
+  $('#mp-sub').textContent = sub || kindLabel(meta.kind, meta.path, '');
   setMarquee($('#fp-title'), meta.title);
-  $('#fp-artist').textContent = sub || (meta.kind || '').toUpperCase();
+  $('#fp-artist').textContent = sub || kindLabel(meta.kind, meta.path, '');
   $('#fp-meta').textContent = [meta.genre, meta.year, meta.track && `#${meta.track}`].filter(Boolean).join(' · ');
   renderFavButton();
   renderLoopBadge();
@@ -829,7 +852,12 @@ document.addEventListener('keydown', (e) => {
 function showLogin() {
   $('#app').hidden = true;
   $('#login').hidden = false;
-  $('#login-pw').focus();
+  const pw = state.caps.password !== false; // false: Google is the only way in
+  $('#login-google').hidden = !state.caps.google;
+  $('#login-pwbox').hidden = !pw;
+  $('#login-submit').hidden = !pw;
+  $('#login-pw').required = pw;
+  if (pw) $('#login-pw').focus();
 }
 
 $('#login-form').addEventListener('submit', async (e) => {

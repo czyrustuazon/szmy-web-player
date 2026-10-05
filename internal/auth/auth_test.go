@@ -112,3 +112,18 @@ func TestDisabledAuthAllowsEverything(t *testing.T) {
 		t.Fatal("login always succeeds when disabled")
 	}
 }
+
+func TestNewSessionAndPasswordlessAuth(t *testing.T) {
+	// With only Google sign-in there is no password hash: no password, not even "", may log in.
+	a := New(nil, nil, false, time.Hour)
+	if _, ok := a.Login(""); ok {
+		t.Fatal("a password login must never work when no password is set")
+	}
+	if _, ok := a.Login("anything"); ok {
+		t.Fatal("a password login must never work when no password is set")
+	}
+	tok, ok := a.NewSession()
+	if !ok || len(tok) != 64 || !a.Valid(tok) {
+		t.Fatalf("NewSession: %q %v", tok, ok)
+	}
+}

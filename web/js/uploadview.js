@@ -19,10 +19,27 @@ export function suggestTitle(files, typed = '') {
   return files.length === 1 && isArchive(files[0].name) ? stem(files[0].name) : '';
 }
 
+// "jpg ×927, txt ×66, other ×3": the biggest groups of skipped files, then a tail count.
+export function describeTypes(types = {}, max = 6) {
+  const rows = Object.entries(types).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = rows.slice(0, max).map(([t, n]) => `${t} ×${n}`);
+  if (rows.length > max) shown.push(`${rows.length - max} more type${rows.length - max === 1 ? '' : 's'}`);
+  return shown.join(', ');
+}
+
+// Where the full list of skipped files can be read, or '' when there is none.
+export function reportUrl(r) {
+  if (!r.hasReport) return '';
+  return `/api/upload/report?relPath=${encodeURIComponent(r.path || '')}&filename=${encodeURIComponent(r.name)}`;
+}
+
 // One line of the results list for a finished file.
 export function describeResult(r) {
   if (r.state === 'done') {
-    if (r.skipped !== undefined && r.skipped > 0) return `${r.tracks} track${r.tracks === 1 ? '' : 's'} added, ${r.skipped} other file${r.skipped === 1 ? '' : 's'} skipped`;
+    if (r.skipped !== undefined && r.skipped > 0) {
+      const what = describeTypes(r.skippedTypes);
+      return `${r.tracks} track${r.tracks === 1 ? '' : 's'} added, ${r.skipped} other file${r.skipped === 1 ? '' : 's'} skipped${what ? ` (${what})` : ''}`;
+    }
     return r.tracks > 1 ? `${r.tracks} tracks added` : 'Added to the library';
   }
   return r.error || 'Upload failed';
@@ -127,7 +144,9 @@ export function initUploadView({ caps, onUploaded, goLibrary, uploader = createU
     for (const r of results) {
       const li = document.createElement('li');
       li.className = r.state === 'done' ? 'ok' : 'bad';
-      li.innerHTML = `<span>${r.state === 'done' ? '✓' : '✗'}</span><span class="nm">${escapeHTML(r.name)}<span class="why">${escapeHTML(describeResult(r))}</span></span>`;
+      const report = reportUrl(r);
+      const link = report ? ` <a href="${escapeHTML(report)}" target="_blank" rel="noopener">See the list</a>` : '';
+      li.innerHTML = `<span>${r.state === 'done' ? '✓' : '✗'}</span><span class="nm">${escapeHTML(r.name)}<span class="why">${escapeHTML(describeResult(r))}${link}</span></span>`;
       el.results.append(li);
     }
   }

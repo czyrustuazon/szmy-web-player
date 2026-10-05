@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -89,6 +90,7 @@ type state struct {
 	Favorites map[string]int64 `json:"favorites"`
 	Settings  Settings         `json:"settings"`
 	Resume    Resume           `json:"resume"`
+	Plays     map[string]int   `json:"plays,omitempty"`
 }
 
 // Store is safe for concurrent use.
@@ -116,8 +118,50 @@ func Open(path string) (*Store, error) {
 	if s.st.Favorites == nil {
 		s.st.Favorites = map[string]int64{}
 	}
+	if s.st.Plays == nil {
+		s.st.Plays = map[string]int{}
+	}
 	s.st.Settings = s.st.Settings.Normalize()
 	return s, nil
+}
+
+// RecordPlay counts one finished listen of path and returns the new total.
+func (s *Store) RecordPlay(path string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.Plays[path]++
+	return s.st.Plays[path], s.save()
+}
+
+// Plays returns how many times path has been listened to.
+func (s *Store) Plays(path string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.Plays[path]
+}
+
+// MovePlays re-roots play counts from folder from to folder to. With
+// to == "" they are kept, so an undone delete still has its history.
+func (s *Store) MovePlays(from, to string) error {
+	if to == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	moved := map[string]int{}
+	for p, n := range s.st.Plays {
+		if strings.HasPrefix(p, from+"/") {
+			delete(s.st.Plays, p)
+			moved[to+p[len(from):]] = n
+		}
+	}
+	if len(moved) == 0 {
+		return nil
+	}
+	for p, n := range moved {
+		s.st.Plays[p] = n
+	}
+	return s.save()
 }
 
 func (s *Store) save() error {
@@ -171,6 +215,41 @@ func (s *Store) SetFavorite(path string, on bool) error {
 	case !on && had:
 		delete(s.st.Favorites, path)
 	default:
+		return nil
+	}
+	return s.save()
+}
+
+// FavoritesUnder lists the favorited paths inside dir (at any depth).
+func (s *Store) FavoritesUnder(dir string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for p := range s.st.Favorites {
+		if strings.HasPrefix(p, dir+"/") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// MoveFavorites re-roots favorites from folder from to folder to, keeping
+// their added times. With to == "" they are dropped.
+func (s *Store) MoveFavorites(from, to string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for p, t := range s.st.Favorites {
+		if !strings.HasPrefix(p, from+"/") {
+			continue
+		}
+		delete(s.st.Favorites, p)
+		if to != "" {
+			s.st.Favorites[to+p[len(from):]] = t
+		}
+		changed = true
+	}
+	if !changed {
 		return nil
 	}
 	return s.save()

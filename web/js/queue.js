@@ -125,6 +125,26 @@ export class Queue {
     return { wasCurrent, next: this.items[this.index] };
   }
 
+  // Remove every track inside a deleted folder. Same result shape as remove().
+  removeUnder(dir) {
+    const out = { wasCurrent: false, next: null };
+    for (const t of this.items.filter((x) => x.path.startsWith(`${dir}/`))) {
+      const r = this.remove(t.path);
+      if (r.wasCurrent) {
+        out.wasCurrent = true;
+        out.next = r.next;
+      }
+    }
+    return out;
+  }
+
+  // A folder was renamed: point the queued tracks inside it at the new path.
+  renameUnder(from, to) {
+    for (const t of this.items) {
+      if (t.path.startsWith(`${from}/`)) t.path = to + t.path.slice(from.length);
+    }
+  }
+
   _goto(i) {
     this._push(i);
   }
