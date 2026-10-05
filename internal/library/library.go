@@ -137,11 +137,37 @@ func (l *Library) Resolve(rel string) (string, error) {
 			return "", ErrOutside
 		}
 	case errors.Is(err, fs.ErrNotExist):
-		// Not there yet (upload target, undo destination): lexical check above is enough.
+		// Not there yet (upload target, undo destination): whatever it will be created in
+		// must still be inside the library, so a symlinked folder cannot lead out of it.
+		if !l.insideExisting(filepath.Dir(abs)) {
+			return "", ErrOutside
+		}
 	default:
 		return "", err
 	}
 	return abs, nil
+}
+
+// insideExisting reports whether the nearest existing folder at or above dir (a path inside
+// the root, as Resolve builds it), with symlinks resolved, is inside the library. A link that
+// leads nowhere counts as outside, and so does everything once the library itself is gone.
+func (l *Library) insideExisting(dir string) bool {
+	for {
+		real, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			return real == l.root || strings.HasPrefix(real, l.root+string(filepath.Separator))
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+		if _, err := os.Lstat(dir); err == nil {
+			return false // it exists, but only as a dangling link
+		}
+		if dir == l.root {
+			return false
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 func readHeader(abs string) []byte {

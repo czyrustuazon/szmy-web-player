@@ -14,8 +14,10 @@ package google
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +26,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,25 +37,16 @@ var (
 	ErrState = errors.New("sign-in expired or invalid; please try again")
 	// ErrDenied means Google vouched for the user, but the address is not on the allowlist.
 	ErrDenied = errors.New("this Google account is not allowed")
-	// ErrBusy means too many sign-in attempts are waiting to be completed.
-	ErrBusy = errors.New("too many sign-ins in progress; please try again in a few minutes")
 )
 
 const (
 	authEndpoint  = "https://accounts.google.com/o/oauth2/v2/auth"
 	tokenEndpoint = "https://oauth2.googleapis.com/token"
 	pendingTTL    = 10 * time.Minute
-	maxPending    = 1000
 )
 
 // randRead is a seam so tests can simulate a failing random source.
 var randRead = rand.Read
-
-type pending struct {
-	verifier string
-	nonce    string
-	expires  time.Time
-}
 
 // Client runs the sign-in flow. It is safe for concurrent use.
 type Client struct {
@@ -66,8 +60,13 @@ type Client struct {
 	http     *http.Client
 	now      func() time.Time
 
-	mu      sync.Mutex
-	pending map[string]pending
+	// A sign-in in progress lives in the browser's cookie (see Start), signed with key, so the
+	// server keeps nothing per attempt and strangers cannot fill a table to lock you out.
+	// used remembers the states that completed an exchange with Google, so a callback cannot
+	// be replayed; only real sign-ins land there.
+	mu   sync.Mutex
+	key  []byte
+	used map[string]time.Time
 }
 
 // New builds a Client. redirectURL is the exact callback registered in the Google Cloud
@@ -80,7 +79,7 @@ func New(clientID, clientSecret, redirectURL string, emails []string) *Client {
 		tokenURL: tokenEndpoint,
 		http:     &http.Client{Timeout: 10 * time.Second},
 		now:      time.Now,
-		pending:  map[string]pending{},
+		used:     map[string]time.Time{},
 	}
 	for _, e := range emails {
 		c.emails[strings.ToLower(strings.TrimSpace(e))] = true
@@ -97,28 +96,41 @@ func ParseEmails(spec string) []string {
 	return out
 }
 
-// Start begins a sign-in. It returns the state to bind to the browser (a cookie) and the Google
-// URL to send the browser to.
-func (c *Client) Start() (state, redirect string, err error) {
+// sealKey returns the key that signs sign-in cookies, made on first use.
+func (c *Client) sealKey() ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.key == nil {
+		k := make([]byte, 32)
+		if _, err := randRead(k); err != nil {
+			return nil, err
+		}
+		c.key = k
+	}
+	return c.key, nil
+}
+
+func mac(key []byte, body string) string {
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte(body))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// Start begins a sign-in. It returns the state (sent to Google and back), the cookie value
+// that binds the sign-in to this browser (it carries the PKCE verifier, the nonce and an
+// expiry, signed, so it must be HttpOnly), and the Google URL to send the browser to.
+func (c *Client) Start() (state, cookie, redirect string, err error) {
+	key, err := c.sealKey()
+	if err != nil {
+		return "", "", "", err
+	}
 	b := make([]byte, 96)
 	if _, err := randRead(b); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	state, verifier, nonce := hex.EncodeToString(b[:32]), hex.EncodeToString(b[32:64]), hex.EncodeToString(b[64:])
-
-	now := c.now()
-	c.mu.Lock()
-	for s, p := range c.pending {
-		if now.After(p.expires) {
-			delete(c.pending, s)
-		}
-	}
-	if len(c.pending) >= maxPending {
-		c.mu.Unlock()
-		return "", "", ErrBusy
-	}
-	c.pending[state] = pending{verifier: verifier, nonce: nonce, expires: now.Add(pendingTTL)}
-	c.mu.Unlock()
+	body := strings.Join([]string{state, verifier, nonce, strconv.FormatInt(c.now().Add(pendingTTL).Unix(), 10)}, ".")
+	cookie = body + "." + mac(key, body)
 
 	challenge := sha256.Sum256([]byte(verifier))
 	q := url.Values{
@@ -132,18 +144,54 @@ func (c *Client) Start() (state, redirect string, err error) {
 		"code_challenge_method": {"S256"},
 		"prompt":                {"select_account"},
 	}
-	return state, c.authURL + "?" + q.Encode(), nil
+	return state, cookie, c.authURL + "?" + q.Encode(), nil
 }
 
-// Finish completes a sign-in: it trades the code for an ID token and checks it. On success it
-// returns the verified email address. If the account is valid but not allowed it returns the
-// address together with ErrDenied, so the caller can log who was refused.
-func (c *Client) Finish(ctx context.Context, state, code string) (string, error) {
+// open checks a sign-in cookie against the state Google sent back and returns its verifier
+// and nonce.
+func (c *Client) open(cookie, state string) (verifier, nonce string, ok bool) {
+	parts := strings.Split(cookie, ".")
+	if len(parts) != 5 {
+		return "", "", false
+	}
 	c.mu.Lock()
-	p, ok := c.pending[state]
-	delete(c.pending, state) // a state works once
+	key := c.key
 	c.mu.Unlock()
-	if !ok || c.now().After(p.expires) {
+	body := strings.Join(parts[:4], ".")
+	if key == nil || !hmac.Equal([]byte(parts[4]), []byte(mac(key, body))) {
+		return "", "", false
+	}
+	exp, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil || c.now().Unix() > exp || subtle.ConstantTimeCompare([]byte(parts[0]), []byte(state)) != 1 {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+// spend marks a state as used, reporting false if it already was.
+func (c *Client) spend(state string) bool {
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for s, exp := range c.used {
+		if now.After(exp) {
+			delete(c.used, s)
+		}
+	}
+	if _, seen := c.used[state]; seen {
+		return false
+	}
+	c.used[state] = now.Add(pendingTTL)
+	return true
+}
+
+// Finish completes a sign-in: it checks the browser's cookie (from Start) against the state,
+// trades the code for an ID token and checks it. On success it returns the verified email
+// address. If the account is valid but not allowed it returns the address together with
+// ErrDenied, so the caller can log who was refused.
+func (c *Client) Finish(ctx context.Context, cookie, state, code string) (string, error) {
+	verifier, nonce, ok := c.open(cookie, state)
+	if !ok {
 		return "", ErrState
 	}
 
@@ -153,7 +201,7 @@ func (c *Client) Finish(ctx context.Context, state, code string) (string, error)
 		"client_secret": {c.clientSecret},
 		"redirect_uri":  {c.redirectURL},
 		"grant_type":    {"authorization_code"},
-		"code_verifier": {p.verifier},
+		"code_verifier": {verifier},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -174,7 +222,11 @@ func (c *Client) Finish(ctx context.Context, state, code string) (string, error)
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tok); err != nil {
 		return "", fmt.Errorf("unreadable answer from Google: %w", err)
 	}
-	return c.verify(tok.IDToken, p.nonce)
+	email, err := c.verify(tok.IDToken, nonce)
+	if (err == nil || errors.Is(err, ErrDenied)) && !c.spend(state) {
+		return "", ErrState // a state works once
+	}
+	return email, err
 }
 
 // verify checks the claims of an ID token received from Google's token endpoint.

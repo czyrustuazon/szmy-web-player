@@ -4,7 +4,6 @@ package api
 
 import (
 	"bytes"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -70,6 +69,10 @@ type Server struct {
 	failDelay  time.Duration
 	now        func() time.Time
 	newSession func() (string, bool) // a seam for tests: issues a session without a password
+	// a seam for tests: starts a Google sign-in (nil means s.Google.Start)
+	startGoogle func() (state, cookie, redirect string, err error)
+	logins      *auth.Limiter // wrong passwords per client
+	hashing     chan struct{} // bounds the password hashes computed at once (each is costly)
 
 	undoMu sync.Mutex
 	undo   map[string]undoRec
@@ -77,7 +80,8 @@ type Server struct {
 
 // New builds a Server.
 func New(d Deps) *Server {
-	return &Server{Deps: d, failDelay: 400 * time.Millisecond, now: time.Now, newSession: d.Auth.NewSession, undo: map[string]undoRec{}}
+	return &Server{Deps: d, failDelay: 400 * time.Millisecond, now: time.Now, newSession: d.Auth.NewSession, undo: map[string]undoRec{},
+		logins: auth.NewLimiter(10, 15*time.Minute, 10_000), hashing: make(chan struct{}, 2)}
 }
 
 // Handler returns the full HTTP handler.
@@ -265,20 +269,26 @@ func (s *Server) dtos(es []library.Entry) []entryDTO {
 
 // ---------------------------------------------------------------- session
 
+// session tells the app how to sign in and, once signed in, what the server can do. Visitors
+// who are not signed in learn only the former.
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"authenticated": s.authed(r),
+	authed := s.authed(r)
+	out := map[string]any{
+		"authenticated": authed,
 		"authRequired":  !s.Auth.Disabled(),
 		"google":        s.Google != nil,
 		"password":      s.Google == nil || strings.TrimSpace(s.Cfg.AdminPassword) != "", // false: Google is the only way in
-		"canDelete":     !s.Lib.ReadOnly(),
-		"canUpload":     s.canUpload(),
-		"vgmstream":     s.TX != nil,
-		"ffmpeg":        s.FF != nil,
-		"uploadDir":     s.Cfg.UploadSubdir,
-		"maxUploadMB":   s.Cfg.MaxUploadMB,
-		"sevenZip":      s.Up.SevenZipAvailable(),
-	})
+	}
+	if authed {
+		out["canDelete"] = !s.Lib.ReadOnly()
+		out["canUpload"] = s.canUpload()
+		out["vgmstream"] = s.TX != nil
+		out["ffmpeg"] = s.FF != nil
+		out["uploadDir"] = s.Cfg.UploadSubdir
+		out["maxUploadMB"] = s.Cfg.MaxUploadMB
+		out["sevenZip"] = s.Up.SevenZipAvailable()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -288,12 +298,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
+	client := access.ClientKey(r)
+	if !s.logins.Allowed(client) {
+		writeErr(w, http.StatusTooManyRequests, "too many wrong passwords; try again in 15 minutes")
+		return
+	}
+	select {
+	case s.hashing <- struct{}{}:
+	case <-r.Context().Done():
+		return
+	}
 	token, ok := s.Auth.Login(body.Password)
+	<-s.hashing
 	if !ok {
+		s.logins.Failed(client)
 		time.Sleep(s.failDelay) // slows down guessing
 		writeErr(w, http.StatusUnauthorized, "wrong password")
 		return
 	}
+	s.logins.Succeeded(client)
 	s.setSession(w, token)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -309,17 +332,17 @@ func (s *Server) setSession(w http.ResponseWriter, token string) {
 // googleStart sends the browser to Google. The state is also kept in a cookie so the callback
 // can tell that the browser finishing the sign-in is the one that started it.
 func (s *Server) googleStart(w http.ResponseWriter, r *http.Request) {
-	state, to, err := s.Google.Start()
+	start := s.Google.Start
+	if s.startGoogle != nil {
+		start = s.startGoogle
+	}
+	_, cookie, to, err := start()
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, google.ErrBusy) {
-			status = http.StatusTooManyRequests
-		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: oauthCookie, Value: state, Path: "/auth/google/", HttpOnly: true,
+		Name: oauthCookie, Value: cookie, Path: "/auth/google/", HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, Secure: s.Cfg.CookieSecure, MaxAge: 600, // Lax: Google sends the browser back
 	})
 	http.Redirect(w, r, to, http.StatusFound)
@@ -330,7 +353,7 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state := q.Get("state")
 	c, err := r.Cookie(oauthCookie)
-	if err != nil || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
+	if err != nil || state == "" {
 		http.Error(w, google.ErrState.Error(), http.StatusBadRequest)
 		return
 	}
@@ -338,7 +361,7 @@ func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in was cancelled", http.StatusUnauthorized)
 		return
 	}
-	email, err := s.Google.Finish(r.Context(), state, q.Get("code"))
+	email, err := s.Google.Finish(r.Context(), c.Value, state, q.Get("code"))
 	switch {
 	case errors.Is(err, google.ErrDenied):
 		s.Log.Append(errlog.CodeIO, "google", email, "sign-in refused: not on the allowlist")
@@ -366,7 +389,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName); err == nil {
 		s.Auth.Logout(c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, Secure: s.Cfg.CookieSecure})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

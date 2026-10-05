@@ -137,7 +137,7 @@ against `MP_TUNNEL_NETS`.
 | Setting | Meaning |
 |---|---|
 | `MP_ALLOWED_NETS` | Networks that may connect. Default `tailscale,lan`: your Tailscale network (`100.64.0.0/10`) and private home-network ranges. Add or swap in your own CIDR such as `192.168.1.0/24`. Use just `tailscale` for the tailnet only. Loopback is always allowed (health checks). |
-| `MP_KNOWN_DEVICES` | Optional. Names of your devices (from `tailscale status`). Tailscale peers must then be one of them. The name comes from this host's own `tailscaled`, so a node of someone else sharing your tailnet cannot get in. Home-network devices are covered by `MP_ALLOWED_NETS`. Needs `tailscaled` on the host: the Makefile then mounts its socket via `docker-compose.tailscale.yml`. |
+| `MP_KNOWN_DEVICES` | Optional. Names of your devices: their MagicDNS names, as in `tailscale status`. Tailscale peers must then be one of them. The name comes from this host's own `tailscaled`, and it is the device's MagicDNS name, never the hostname a device reports about itself, so renaming a machine does not get it in. A device shared in from another tailnet matches only its full name (`laptop.other-tailnet.ts.net`), so it cannot pass for one of yours. Needs MagicDNS turned on. Home-network devices are covered by `MP_ALLOWED_NETS`. Needs `tailscaled` on the host: the Makefile then mounts its socket via `docker-compose.tailscale.yml`. |
 | `MP_TRUSTED_PROXIES` | Where a tunnel or reverse proxy may connect from. Default `loopback,lan` (`cloudflared` on this host reaches the container from loopback or the Docker gateway). A request from there that carries a forwarding header is judged by the visitor address in that header instead. Headers from anywhere else (a tailnet peer, the internet) are still ignored. `none` never reads them. |
 | `MP_TUNNEL_NETS` | Where visitors arriving through such a proxy may come from. Default `any`, so a Google-sign-in tunnel works from anywhere. Narrow it (same syntax as `MP_ALLOWED_NETS`, e.g. your home's public address or your carrier's range) to put a network check back in front of the sign-in. A proxied request with no readable visitor address is refused. |
 | `BIND_ADDR` | Host address the port is published on. `0.0.0.0` (default) is every IPv4 interface; set it to the host's Tailscale address (`tailscale ip -4`) to listen on the tailnet only, like `BIND_ADDR` in `anime-db-stream`. |
@@ -320,18 +320,29 @@ proxy, allow request bodies of at least 16 MiB.
   `SameSite=Strict`). With none, access is open. In both modes state-changing requests need
   an `X-Requested-With` header, which cross-site forms cannot send.
 - All paths are resolved against the library root; `..`, hidden folders and symlinks that
-  leave the library are refused.
+  leave the library are refused, including for files that do not exist yet (a new file under a
+  symlinked folder that leads out of the library is refused too).
 - Uploads can only land inside the upload folder; loose files must sniff as audio; names are
   sanitised; nothing is ever overwritten; archive entries cannot escape (Zip Slip) and are
-  reduced to audio files; extraction is size-capped against zip bombs (a 7z bomb is limited only
-  by the free-space check).
+  reduced to audio files; extraction is size-capped against zip and 7z bombs (`MP_MAX_UPLOAD_MB`).
+  A `.7z` is listed before it is unpacked and refused if it holds a symbolic or hard link, a path
+  that climbs out, or more data than the limit.
 - Cover art (embedded or from a folder) is only served if the bytes really are JPEG/PNG/GIF/WebP,
   with a sandboxing CSP.
 - ffmpeg reads untrusted media: it runs with `-protocol_whitelist file` (no network or other
-  protocols can be reached through a crafted playlist or container), without stdin, under a
-  15 minute limit, and its output goes to a private cache.
-- Passwords are stored as salted, iterated SHA-256 hashes. This is a single-user LAN-grade
-  login; put it behind HTTPS (and ideally a VPN) if you expose it to the internet.
+  protocols can be reached through a crafted playlist or container) and `-format_whitelist`
+  (only audio/video containers, so a file cannot be read as an HLS or concat playlist that pulls
+  other files from the disk into the audio), without stdin, under a 15 minute limit, and its
+  output goes to a private cache.
+- Passwords are stored as salted, iterated SHA-256 hashes. After 10 wrong passwords from one
+  address (one /64 for IPv6; behind a tunnel, the visitor's address) that address is refused for
+  15 minutes, and at most two password checks run at once, so a flood of guesses cannot hog the
+  CPU. This is a single-user login; prefer Google sign-in (and Cloudflare Access) for the internet.
+- Sign in with Google keeps nothing on the server for a sign-in in progress: the PKCE verifier
+  and nonce travel in a signed, `HttpOnly` cookie, so strangers starting sign-ins cannot fill up a
+  table and lock you out.
+- Visitors who are not signed in only learn how to sign in from `/api/session`, not what the
+  server can do (upload folder, size limit, installed tools).
 
 ## Development
 

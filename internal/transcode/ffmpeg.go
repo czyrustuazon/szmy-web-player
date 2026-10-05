@@ -9,12 +9,19 @@ import (
 	"strings"
 )
 
+// formats are the demuxers the player needs: what sniff routes to ffmpeg, plus the formats
+// browsers play natively (transcode=1 converts those too).
+const formats = "asf,ape,wv,tta,mpc,mpc8,dsf,iff,flv,amr,matroska,webm,avi,mov,mp4,aiff,ac3,eac3,dts,caf," +
+	"mp3,flac,wav,w64,ogg,aac"
+
 // FFmpeg drives ffmpeg and ffprobe: it converts formats browsers cannot play (WMA, APE,
 // WavPack, TTA, the audio of WMV/FLV/MKV/AVI files, ...) to FLAC, which every browser plays,
 // losslessly, and reads their tags.
 //
 // -protocol_whitelist file keeps a crafted playlist inside an uploaded file from making ffmpeg
-// open network addresses or other protocols.
+// open network addresses or other protocols, and -format_whitelist keeps ffmpeg to audio and
+// video containers, so such a file cannot be read as a playlist (HLS, concat, ...) that
+// stitches other files on the disk into the audio.
 type FFmpeg struct {
 	Bin   string   // ffmpeg
 	Probe string   // ffprobe
@@ -23,7 +30,7 @@ type FFmpeg struct {
 
 // Metadata reads tags and stream info with ffprobe.
 func (f FFmpeg) Metadata(ctx context.Context, src string) (Info, error) {
-	out, err := runCommand(ctx, f.Exec, f.Probe, "-v", "error", "-protocol_whitelist", "file",
+	out, err := runCommand(ctx, f.Exec, f.Probe, "-v", "error", "-protocol_whitelist", "file", "-format_whitelist", formats,
 		"-print_format", "json", "-show_format", "-show_streams", src)
 	if err != nil {
 		return Info{}, err
@@ -34,7 +41,7 @@ func (f FFmpeg) Metadata(ctx context.Context, src string) (Info, error) {
 // Decode converts the first audio stream to FLAC.
 func (f FFmpeg) Decode(ctx context.Context, src, dst string) error {
 	_, err := runCommand(ctx, f.Exec, f.Bin, "-nostdin", "-y", "-v", "error", "-protocol_whitelist", "file",
-		"-i", src, "-vn", "-map", "0:a:0", "-c:a", "flac", "-f", "flac", dst)
+		"-format_whitelist", formats, "-i", src, "-vn", "-map", "0:a:0", "-c:a", "flac", "-f", "flac", dst)
 	return err
 }
 

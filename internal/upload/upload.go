@@ -39,6 +39,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -698,7 +699,7 @@ func (m *Manager) runArchive(key, clean, destDir, stagingPath, metaPath string, 
 	if strings.EqualFold(filepath.Ext(meta.Filename), ".zip") {
 		err = extractZip(stagingPath, tmp, m.maxBytes)
 	} else {
-		err = m.extract7z(stagingPath, tmp)
+		err = m.extract7z(stagingPath, tmp, m.maxBytes)
 	}
 	if err != nil {
 		fail("extracting %s: %v", filepath.Base(meta.Filename), err)
@@ -808,12 +809,84 @@ func openZip(path string) (*zip.ReadCloser, error) {
 	return r, nil
 }
 
-func (m *Manager) extract7z(archivePath, destDir string) error {
-	out, err := m.exec("7z", "x", "-y", "-o"+destDir, archivePath)
+// extract7z extracts a .7z archive into destDir. 7z itself has no size limit and recreates
+// symbolic links, so the archive is listed first: links, paths that climb out of destDir and
+// a total unpacked size over budget (7z bombs) are refused before anything is written. The
+// size is checked again afterwards, in case the listing did not tell the truth.
+func (m *Manager) extract7z(archivePath, destDir string, budget int64) error {
+	out, err := m.exec("7z", "l", "-slt", archivePath)
+	if err != nil {
+		return fmt.Errorf("7z listing failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := check7zListing(out, budget); err != nil {
+		return err
+	}
+	out, err = m.exec("7z", "x", "-y", "-o"+destDir, archivePath)
 	if err != nil {
 		return fmt.Errorf("7z extraction failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	if dirSize(destDir) > budget {
+		return fmt.Errorf("%w: archive expands past the size limit", ErrTooLarge)
+	}
 	return nil
+}
+
+// check7zListing reads `7z l -slt` output (one "Key = value" block per entry after a line of
+// dashes) and refuses links, escaping paths and archives that unpack to more than budget.
+func check7zListing(out []byte, budget int64) error {
+	started := false
+	var total int64
+	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r", ""), "\n") {
+		if !started {
+			started = line == "----------"
+			continue
+		}
+		k, v, ok := strings.Cut(line, " = ")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "Path":
+			p := strings.ReplaceAll(v, `\`, "/")
+			if strings.HasPrefix(p, "/") || (len(p) >= 2 && p[1] == ':') || p == ".." ||
+				strings.HasPrefix(p, "../") || strings.HasSuffix(p, "/..") || strings.Contains(p, "/../") {
+				return fmt.Errorf("7z entry %q escapes the destination folder", v)
+			}
+		case "Size":
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				if total += n; total > budget {
+					return fmt.Errorf("%w: archive expands past the size limit", ErrTooLarge)
+				}
+			}
+		case "Attributes":
+			if isLinkAttributes(v) {
+				return fmt.Errorf("7z archive contains a link; links are not allowed")
+			}
+		case "Symbolic Link", "Hard Link":
+			if strings.TrimSpace(v) != "" {
+				return fmt.Errorf("7z archive contains a link; links are not allowed")
+			}
+		}
+	}
+	if !started {
+		return fmt.Errorf("7z listing is unreadable")
+	}
+	return nil
+}
+
+// isLinkAttributes spots a link in 7z's attribute column: Windows' reparse-point flag ("L" in
+// the first field, e.g. "AL") or a Unix mode string starting with "l" ("lrwxrwxrwx").
+func isLinkAttributes(v string) bool {
+	fields := strings.Fields(v)
+	if len(fields) > 0 && strings.Contains(fields[0], "L") {
+		return true
+	}
+	for _, f := range fields {
+		if len(f) == 10 && f[0] == 'l' && strings.Trim(f[1:], "rwxsStT-") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // extractZip extracts archivePath into destDir, refusing entries that escape it

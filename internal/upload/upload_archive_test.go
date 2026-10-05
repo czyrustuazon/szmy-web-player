@@ -378,6 +378,15 @@ func fake7z(files map[string][]byte, failOn string, calls *[]string) ExecFunc {
 		switch {
 		case args[0] == "t" && failOn == "t":
 			return []byte("CRC Failed"), errors.New("exit status 2")
+		case args[0] == "l" && failOn == "l":
+			return []byte("Can not open the file as archive"), errors.New("exit status 2")
+		case args[0] == "l":
+			var b strings.Builder
+			b.WriteString("7-Zip [64] 16.02\n\nListing archive: a.7z\n\n--\nPath = a.7z\nType = 7z\n\n----------\n")
+			for rel, data := range files {
+				fmt.Fprintf(&b, "Path = %s\nSize = %d\nAttributes = A_ -rw-r--r--\n\n", filepath.FromSlash(rel), len(data))
+			}
+			return []byte(b.String()), nil
 		case args[0] == "x" && failOn == "x":
 			return []byte("disk full"), errors.New("exit status 2")
 		case args[0] == "x":
@@ -403,7 +412,7 @@ func TestSevenZipUpload(t *testing.T) {
 	if st.State != Done || st.Tracks != 1 || st.Skipped != 1 || st.SkippedTypes["png"] != 1 {
 		t.Fatalf("status: %+v", st)
 	}
-	if strings.Join(calls, ",") != "7z t,7z x" {
+	if strings.Join(calls, ",") != "7z t,7z l,7z x" {
 		t.Errorf("expected an integrity test then an extraction, got %v", calls)
 	}
 	if files := listTree(t, filepath.Join(root, "uploads", "Packed")); len(files) != 1 || files[0] != "01.mp3" {
@@ -415,6 +424,7 @@ func TestSevenZipFailures(t *testing.T) {
 	payload := []byte("pretend this is a 7z archive")
 	cases := map[string]string{
 		"t": "source file itself is damaged",
+		"l": "7z listing failed",
 		"x": "7z extraction failed",
 	}
 	for failOn, want := range cases {
@@ -430,6 +440,82 @@ func TestSevenZipFailures(t *testing.T) {
 	}
 	if out, err := defaultExec("definitely-not-a-real-binary-xyz", "t"); err == nil {
 		t.Errorf("the default runner must report a missing binary, got %q", out)
+	}
+}
+
+func TestSevenZipListingChecks(t *testing.T) {
+	head := "Listing archive: a.7z\n--\nPath = a.7z\nType = 7z\nPhysical Size = 99\n\n----------\n"
+	entry := func(path, size, attrs string) string {
+		return "Path = " + path + "\nSize = " + size + "\nAttributes = " + attrs + "\n\n"
+	}
+	ok := []string{
+		head + entry("Album/01.mp3", "100", "A_ -rw-r--r--") + entry("Album", "0", "D_ drwxr-xr-x") + entry(`Win\02.mp3`, "100", "A"),
+		head + entry("..odd name/01.mp3", "100", "A") + "Size = not-a-number\nSymbolic Link = \n",
+		"\r\n----------\r\n" + strings.ReplaceAll(entry("a.mp3", "1000", "A"), "\n", "\r\n"),
+	}
+	for i, out := range ok {
+		if err := check7zListing([]byte(out), 1000); err != nil {
+			t.Errorf("ok[%d]: %v", i, err)
+		}
+	}
+	bad := map[string]string{
+		"unix symlink":    head + entry("Album/cover", "10", "A_ lrwxrwxrwx"),
+		"windows link":    head + entry("Album/cover", "10", "AL"),
+		"link target":     head + entry("Album/cover", "10", "A") + "Symbolic Link = /etc\n",
+		"hard link":       head + entry("Album/x", "10", "A") + "Hard Link = Album/y\n",
+		"absolute":        head + entry("/etc/cron.d/x", "10", "A"),
+		"drive":           head + entry(`C:\x`, "10", "A"),
+		"climbs":          head + entry("../x", "10", "A"),
+		"climbs inside":   head + entry(`a\..\..\x`, "10", "A"),
+		"ends climbing":   head + entry("a/..", "0", "D"),
+		"just dots":       head + entry("..", "0", "D"),
+		"bomb":            head + entry("a.wav", "600", "A") + entry("b.wav", "600", "A"),
+		"no entries list": "Listing archive: a.7z\nPath = a.7z\n",
+	}
+	for name, out := range bad {
+		if err := check7zListing([]byte(out), 1000); err == nil {
+			t.Errorf("%s must be refused", name)
+		}
+	}
+	if err := check7zListing([]byte(head+entry("a.wav", "1001", "A")), 1000); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("too large: %v", err)
+	}
+	if isLinkAttributes("A_ -rw-r--r--") || isLinkAttributes("") || isLinkAttributes("A lrwx") {
+		t.Error("plain files are not links")
+	}
+}
+
+func TestSevenZipRefusedBeforeExtracting(t *testing.T) {
+	m, _ := newMgr(t)
+	rel := start(t, m, "x")
+	var calls []string
+	m.exec = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, args[0])
+		if args[0] == "l" {
+			return []byte("----------\nPath = evil\nSize = 4\nAttributes = A_ lrwxrwxrwx\n"), nil
+		}
+		return nil, nil
+	}
+	payload := []byte("pretend this is a 7z archive")
+	send(t, m, rel, "a.7z", payload, 100)
+	st := finish(t, m, rel, "a.7z", len(payload))
+	if st.State != Failed || !strings.Contains(st.Error, "link") || strings.Join(calls, ",") != "t,l" {
+		t.Errorf("a link must stop the upload before 7z x runs: %+v %v", st, calls)
+	}
+}
+
+func TestSevenZipSizeIsCheckedAfterExtractingToo(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := newMgr(t)
+	m.exec = func(name string, args ...string) ([]byte, error) {
+		if args[0] == "l" {
+			return []byte("----------\nPath = a.mp3\nSize = 1\nAttributes = A\n"), nil // lies
+		}
+		os.WriteFile(filepath.Join(strings.TrimPrefix(args[2], "-o"), "a.mp3"), make([]byte, 50), 0o644)
+		return nil, nil
+	}
+	if err := m.extract7z("a.7z", dir, 10); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("got %v", err)
 	}
 }
 

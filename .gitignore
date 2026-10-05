@@ -5,3 +5,5 @@
 coverage.out
 node_modules/
 *.log
+/uploads/
+.env.bak

@@ -10,9 +10,11 @@
 //     everything else, so a router port-forward or a stray public address cannot expose the
 //     player. Loopback is always allowed (health checks, local use).
 //  2. Optionally, a device allowlist (MP_KNOWN_DEVICES). A Tailscale peer must then be one of
-//     your named devices. The name comes from the host's own tailscaled (its local API, over
-//     the unix socket), not from the IP, so another person's node in a shared tailnet cannot
-//     get in. Peers on the home network are not Tailscale peers and are allowed by layer 1.
+//     your named devices. The name is the device's MagicDNS name as the host's own tailscaled
+//     knows it (its local API, over the unix socket), not the IP and not the hostname the
+//     device claims, so another person's node (shared into your tailnet, or renamed to look
+//     like yours) cannot get in. Peers on the home network are not Tailscale peers and are
+//     allowed by layer 1.
 package access
 
 import (
@@ -268,16 +270,37 @@ func (p *Policy) identify(ctx context.Context, ip netip.Addr, remote string) ([]
 	return names, nil
 }
 
-// Middleware refuses connections that are not allowed with a plain 403.
+// Middleware refuses connections that are not allowed with a plain 403. Allowed requests
+// carry the address they were judged by (the tunnel visitor, or the peer), for ClientKey.
 func (p *Policy) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ok, why, who := p.Check(r); !ok {
+		ok, why, who := p.Check(r)
+		if !ok {
 			p.logRefusal(who, why)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
+		a, _ := parseRemote(who) // always readable once allowed
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), visitorKey{}, a)))
 	})
+}
+
+type visitorKey struct{}
+
+// ClientKey names who is at the other end of r, for rate limits: the visitor Middleware
+// judged (behind a tunnel, the real visitor rather than the tunnel), else the peer address.
+// IPv6 visitors are grouped by /64, since one household or phone usually holds a whole /64.
+func ClientKey(r *http.Request) string {
+	a, ok := r.Context().Value(visitorKey{}).(netip.Addr)
+	if !ok {
+		if a, ok = parseRemote(r.RemoteAddr); !ok {
+			return "unknown"
+		}
+	}
+	if a.Is6() {
+		return netip.PrefixFrom(a, 64).Masked().String()
+	}
+	return a.String()
 }
 
 // logRefusal logs a refusal at most once per address every ten minutes, so a scanner cannot
@@ -298,6 +321,11 @@ func (p *Policy) logRefusal(remote, why string) {
 
 // TailscaleWhois asks the host's tailscaled which device owns a connection, through its local
 // API on the unix socket (bind-mount /var/run/tailscale/tailscaled.sock into the container).
+//
+// Only the device's MagicDNS name counts, never the hostname the device reports about itself
+// (anyone can rename their own machine "minisforum"). A device of your own tailnet answers to
+// its short name ("minisforum") and its full name ("minisforum.tail0303c3.ts.net"); a device
+// shared in from another tailnet only to its full name, so it can never pass for one of yours.
 func TailscaleWhois(socket string) WhoisFunc {
 	client := &http.Client{
 		Timeout: 3 * time.Second,
@@ -307,37 +335,68 @@ func TailscaleWhois(socket string) WhoisFunc {
 			},
 		},
 	}
-	return func(ctx context.Context, remote string) ([]string, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-			"http://local-tailscaled.sock/localapi/v0/whois?addr="+url.QueryEscape(remote), nil)
+	get := func(ctx context.Context, path string, v any) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://local-tailscaled.sock"+path, nil)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("tailscaled answered %s", resp.Status)
+			return fmt.Errorf("tailscaled answered %s", resp.Status)
 		}
-		var body struct {
-			Node struct {
-				Name         string
-				ComputedName string
-				Hostinfo     struct{ Hostname string }
-			}
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+			return fmt.Errorf("unreadable answer from tailscaled: %w", err)
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			return nil, fmt.Errorf("unreadable answer from tailscaled: %w", err)
+		return nil
+	}
+
+	var mu sync.Mutex
+	var suffix string // this tailnet's MagicDNS suffix, once known
+	ownSuffix := func(ctx context.Context) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if suffix != "" {
+			return suffix, nil
 		}
-		first, _, _ := strings.Cut(strings.TrimSuffix(body.Node.Name, "."), ".")
-		var names []string
-		for _, n := range []string{body.Node.ComputedName, body.Node.Hostinfo.Hostname, first} {
-			if n = strings.ToLower(strings.TrimSpace(n)); n != "" {
-				names = append(names, n)
-			}
+		var st struct {
+			MagicDNSSuffix string
+			CurrentTailnet struct{ MagicDNSSuffix string }
 		}
-		return names, nil
+		if err := get(ctx, "/localapi/v0/status?peers=false", &st); err != nil {
+			return "", err
+		}
+		s := st.MagicDNSSuffix
+		if s == "" {
+			s = st.CurrentTailnet.MagicDNSSuffix
+		}
+		s = strings.ToLower(strings.Trim(s, "."))
+		if s == "" {
+			return "", fmt.Errorf("tailscaled did not say which tailnet this is (is MagicDNS on?)")
+		}
+		suffix = s
+		return s, nil
+	}
+
+	return func(ctx context.Context, remote string) ([]string, error) {
+		own, err := ownSuffix(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var body struct{ Node struct{ Name string } }
+		if err := get(ctx, "/localapi/v0/whois?addr="+url.QueryEscape(remote), &body); err != nil {
+			return nil, err
+		}
+		full := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(body.Node.Name), "."))
+		if full == "" {
+			return nil, fmt.Errorf("tailscaled gave the device no name")
+		}
+		if short, ok := strings.CutSuffix(full, "."+own); ok && !strings.Contains(short, ".") {
+			return []string{short, full}, nil
+		}
+		return []string{full}, nil
 	}
 }

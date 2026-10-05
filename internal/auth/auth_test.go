@@ -127,3 +127,53 @@ func TestNewSessionAndPasswordlessAuth(t *testing.T) {
 		t.Fatalf("NewSession: %q %v", tok, ok)
 	}
 }
+
+func TestLimiterBlocksAfterMaxFailuresUntilTheWindowPasses(t *testing.T) {
+	l := NewLimiter(3, 15*time.Minute, 100)
+	now := time.Unix(1_000_000, 0)
+	l.now = func() time.Time { return now }
+	for i := 0; i < 3; i++ {
+		if !l.Allowed("a") {
+			t.Fatalf("attempt %d must be allowed", i+1)
+		}
+		l.Failed("a")
+	}
+	if l.Allowed("a") {
+		t.Fatal("blocked after three failures")
+	}
+	if !l.Allowed("b") {
+		t.Fatal("other clients are unaffected")
+	}
+	now = now.Add(15 * time.Minute)
+	if !l.Allowed("a") {
+		t.Fatal("allowed again once the window has passed")
+	}
+	l.Failed("a")
+	l.Failed("a")
+	l.Succeeded("a")
+	l.Failed("a")
+	l.Failed("a")
+	if !l.Allowed("a") {
+		t.Fatal("a success clears the count")
+	}
+}
+
+func TestLimiterCapacity(t *testing.T) {
+	l := NewLimiter(5, time.Minute, 2)
+	now := time.Unix(1_000_000, 0)
+	l.now = func() time.Time { return now }
+	l.Failed("a")
+	l.Failed("b")
+	l.Failed("c") // not tracked: full
+	if l.Allowed("c") || l.Allowed("d") {
+		t.Fatal("with the table full, new clients are refused")
+	}
+	if !l.Allowed("a") {
+		t.Fatal("tracked clients go on as usual")
+	}
+	now = now.Add(time.Minute)
+	l.Failed("c") // the sweep frees the expired entries
+	if len(l.fails) != 1 || !l.Allowed("d") {
+		t.Fatalf("expired clients are swept: %v", l.fails)
+	}
+}

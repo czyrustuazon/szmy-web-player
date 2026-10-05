@@ -908,9 +908,10 @@ $('#login-form').addEventListener('submit', async (e) => {
   try {
     await api.login($('#login-pw').value);
     $('#login-pw').value = '';
+    state.caps = await api.session(); // what the server can do is only told once signed in
     await startApp();
   } catch (err) {
-    $('#login-err').textContent = err instanceof ApiError && err.status === 401 ? 'Wrong password' : err.message;
+    $('#login-err').textContent = err instanceof ApiError && err.status === 401 ? 'Wrong password' : err.message; // 429: too many tries
   }
 });
 

@@ -171,6 +171,41 @@ func TestResolveRejectsSymlinkEscape(t *testing.T) {
 	if _, err := l.Resolve("link"); !errors.Is(err, ErrOutside) {
 		t.Errorf("symlinked dir: %v", err)
 	}
+	// Paths that do not exist yet are judged by the folder they would be created in.
+	for _, p := range []string{"link/new.mp3", "link/new/deeper/x.mp3"} {
+		if _, err := l.Resolve(p); !errors.Is(err, ErrOutside) {
+			t.Errorf("%s: a new file under a symlink that leads out: %v", p, err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(outside, "missing"), filepath.Join(root, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Resolve("dangling/x.mp3"); !errors.Is(err, ErrOutside) {
+		t.Errorf("a dangling link counts as outside: %v", err)
+	}
+	if _, err := l.Resolve("brand/new/folder/x.mp3"); err != nil {
+		t.Errorf("new folders inside the library are fine: %v", err)
+	}
+	if _, err := l.Resolve("sub/new.mp3"); err != nil {
+		t.Errorf("a new file in an existing folder: %v", err)
+	}
+}
+
+func TestInsideExistingEdgeCases(t *testing.T) {
+	l, root := newLib(t)
+	if l.insideExisting(filepath.Dir(root)) {
+		t.Error("the library's parent is outside")
+	}
+	// A file where a folder is expected: EvalSymlinks fails with "not a directory".
+	mustWrite(t, filepath.Join(root, "file.mp3"), mp3)
+	if l.insideExisting(filepath.Join(root, "file.mp3", "x")) {
+		t.Error("a path through a file is refused")
+	}
+	// The library folder itself has gone away.
+	gone := &Library{root: filepath.Join(t.TempDir(), "never")}
+	if gone.insideExisting(filepath.Join(gone.root, "a")) {
+		t.Error("a missing library holds nothing")
+	}
 }
 
 func TestTracksOrderCrossesFolders(t *testing.T) {

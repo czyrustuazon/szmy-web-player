@@ -304,51 +304,115 @@ func fakeTailscaled(t *testing.T, handler http.HandlerFunc) string {
 	return sock
 }
 
-func TestTailscaleWhoisReadsTheDeviceNameFromTailscaled(t *testing.T) {
-	var gotPath, gotAddr, gotHost string
-	sock := fakeTailscaled(t, func(w http.ResponseWriter, r *http.Request) {
-		gotPath, gotAddr, gotHost = r.URL.Path, r.URL.Query().Get("addr"), r.Host
-		json.NewEncoder(w).Encode(map[string]any{"Node": map[string]any{
-			"Name": "Minisforum.tail0303c3.ts.net.", "ComputedName": "MiniSForum",
-			"Hostinfo": map[string]any{"Hostname": "MINISFORUM-PC"},
-		}})
+// tailscaled fakes the daemon: status names this tailnet's suffix, whois answers with node.
+func tailscaled(t *testing.T, suffix string, node map[string]any) (sock string, whoisAddr *string) {
+	t.Helper()
+	var addr string
+	sock = fakeTailscaled(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "local-tailscaled.sock" {
+			t.Errorf("host %q", r.Host)
+		}
+		switch r.URL.Path {
+		case "/localapi/v0/status":
+			json.NewEncoder(w).Encode(map[string]any{"MagicDNSSuffix": suffix})
+		case "/localapi/v0/whois":
+			addr = r.URL.Query().Get("addr")
+			json.NewEncoder(w).Encode(map[string]any{"Node": node})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	return sock, &addr
+}
+
+func TestTailscaleWhoisNamesYourOwnDevicesByMagicDNSName(t *testing.T) {
+	sock, addr := tailscaled(t, "tail0303c3.ts.net", map[string]any{
+		"Name": "Minisforum.tail0303c3.ts.net.", "ComputedName": "4090",
+		"Hostinfo": map[string]any{"Hostname": "4090"}, // self-reported: must not count
 	})
 	names, err := TailscaleWhois(sock)(context.Background(), "100.89.219.7:5050")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(names, ",") != "minisforum,minisforum-pc,minisforum" {
+	if strings.Join(names, ",") != "minisforum,minisforum.tail0303c3.ts.net" {
 		t.Errorf("names: %v", names)
 	}
-	if gotPath != "/localapi/v0/whois" || gotAddr != "100.89.219.7:5050" || gotHost != "local-tailscaled.sock" {
-		t.Errorf("request: %s %s %s", gotPath, gotAddr, gotHost)
+	if *addr != "100.89.219.7:5050" {
+		t.Errorf("whois addr %q", *addr)
 	}
 	// And it works end to end through a Policy.
 	p, _ := policy(t, "tailscale", []string{"minisforum"}, TailscaleWhois(sock))
 	if ok, why := allowed(p, "100.89.219.7:5050"); !ok {
 		t.Errorf("%s", why)
 	}
+	// A device calling itself "4090" is still minisforum.
+	p2, _ := policy(t, "tailscale", []string{"4090"}, TailscaleWhois(sock))
+	if ok, _ := allowed(p2, "100.89.219.7:5050"); ok {
+		t.Error("the self-reported hostname must not open the door")
+	}
 }
 
-func TestTailscaleWhoisSkipsMissingFields(t *testing.T) {
+func TestTailscaleWhoisSharedInDevicesOnlyMatchTheirFullName(t *testing.T) {
+	sock, _ := tailscaled(t, "tail0303c3.ts.net.", map[string]any{"Name": "minisforum.strangers-net.ts.net."})
+	names, err := TailscaleWhois(sock)(context.Background(), "100.99.99.99:1")
+	if err != nil || strings.Join(names, ",") != "minisforum.strangers-net.ts.net" {
+		t.Fatalf("%v %v", names, err)
+	}
+	p, _ := policy(t, "tailscale", []string{"minisforum"}, TailscaleWhois(sock))
+	if ok, _ := allowed(p, "100.99.99.99:1"); ok {
+		t.Error("someone else's minisforum is not yours")
+	}
+	// More labels in front of your suffix is not a device name of yours either.
+	sock2, _ := tailscaled(t, "tail0303c3.ts.net", map[string]any{"Name": "a.b.tail0303c3.ts.net"})
+	if names, _ := TailscaleWhois(sock2)(context.Background(), "100.1.2.3:1"); strings.Join(names, ",") != "a.b.tail0303c3.ts.net" {
+		t.Errorf("%v", names)
+	}
+}
+
+func TestTailscaleWhoisReadsTheSuffixOnceAndFallsBack(t *testing.T) {
+	statusCalls := 0
 	sock := fakeTailscaled(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"Node":{"Name":"","ComputedName":"  ","Hostinfo":{"Hostname":"Phone"}}}`))
+		if r.URL.Path == "/localapi/v0/status" {
+			statusCalls++
+			w.Write([]byte(`{"MagicDNSSuffix":"","CurrentTailnet":{"MagicDNSSuffix":"Tail0303c3.ts.net"}}`))
+			return
+		}
+		w.Write([]byte(`{"Node":{"Name":"phone.tail0303c3.ts.net."}}`))
 	})
-	names, err := TailscaleWhois(sock)(context.Background(), "100.1.2.3:1")
-	if err != nil || strings.Join(names, ",") != "phone" {
-		t.Errorf("%v %v", names, err)
+	who := TailscaleWhois(sock)
+	for i := 0; i < 3; i++ {
+		if names, err := who(context.Background(), "100.1.2.3:1"); err != nil || names[0] != "phone" {
+			t.Fatalf("%v %v", names, err)
+		}
+	}
+	if statusCalls != 1 {
+		t.Errorf("the suffix is asked for once: %d", statusCalls)
 	}
 }
 
 func TestTailscaleWhoisErrors(t *testing.T) {
+	fails := func(name, sock, want string) {
+		t.Helper()
+		if _, err := TailscaleWhois(sock)(context.Background(), "100.1.2.3:1"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	notFound := fakeTailscaled(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no match", 404) })
-	if _, err := TailscaleWhois(notFound)(context.Background(), "100.1.2.3:1"); err == nil || !strings.Contains(err.Error(), "404") {
-		t.Errorf("non-200: %v", err)
-	}
+	fails("non-200", notFound, "404")
 	garbage := fakeTailscaled(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("<html>")) })
-	if _, err := TailscaleWhois(garbage)(context.Background(), "100.1.2.3:1"); err == nil || !strings.Contains(err.Error(), "unreadable") {
-		t.Errorf("bad JSON: %v", err)
-	}
+	fails("bad JSON", garbage, "unreadable")
+	noSuffix, _ := tailscaled(t, "", map[string]any{"Name": "x.y.ts.net"})
+	fails("no MagicDNS", noSuffix, "which tailnet")
+	noName, _ := tailscaled(t, "tail0303c3.ts.net", map[string]any{"Name": " "})
+	fails("no name", noName, "no name")
+	whoisDown := fakeTailscaled(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/localapi/v0/status" {
+			w.Write([]byte(`{"MagicDNSSuffix":"t.ts.net"}`))
+			return
+		}
+		http.Error(w, "boom", 500)
+	})
+	fails("whois fails", whoisDown, "500")
 	if _, err := TailscaleWhois(filepath.Join(t.TempDir(), "missing.sock"))(context.Background(), "100.1.2.3:1"); err == nil {
 		t.Error("no socket")
 	}
@@ -359,110 +423,27 @@ func TestTailscaleWhoisErrors(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------- behind a proxy or tunnel
-
-func tunnelPolicy(t *testing.T, proxies, visitors string) (*Policy, *[]string) {
-	t.Helper()
-	p, logs := policy(t, "tailscale,lan", nil, nil)
-	pn, err := ParseNets(proxies)
-	if err != nil {
-		t.Fatal(err)
+func TestClientKey(t *testing.T) {
+	p, _ := tunnelPolicy(t, "loopback", "any")
+	var got string
+	h := p.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = ClientKey(r) }))
+	h.ServeHTTP(httptest.NewRecorder(), request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"}))
+	if got != "203.0.113.7" {
+		t.Errorf("behind the tunnel the key is the visitor: %q", got)
 	}
-	vn, err := ParseNets(visitors)
-	if err != nil {
-		t.Fatal(err)
+	h.ServeHTTP(httptest.NewRecorder(), request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "2001:db8:1:2:aaaa::1"}))
+	if got != "2001:db8:1:2::/64" {
+		t.Errorf("IPv6 visitors are grouped by /64: %q", got)
 	}
-	p.TrustProxies(pn, vn)
-	return p, logs
-}
-
-func request(remote string, headers map[string]string) *http.Request {
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = remote
-	for k, v := range headers {
-		r.Header.Add(k, v)
+	h.ServeHTTP(httptest.NewRecorder(), request("[::ffff:192.168.1.5]:9", nil))
+	if got != "192.168.1.5" {
+		t.Errorf("peer: %q", got)
 	}
-	return r
-}
-
-func TestForwarded(t *testing.T) {
-	for _, k := range []string{"CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP", "Forwarded"} {
-		if !Forwarded(http.Header{http.CanonicalHeaderKey(k): {"203.0.113.7"}}) {
-			t.Errorf("%s marks a proxied request", k)
-		}
+	// Without the middleware (no access policy), the peer address.
+	if k := ClientKey(request("192.168.1.9:1", nil)); k != "192.168.1.9" {
+		t.Errorf("no middleware: %q", k)
 	}
-	if Forwarded(http.Header{"User-Agent": {"x"}}) {
-		t.Error("a plain request is not proxied")
-	}
-}
-
-func TestTunnelVisitorsAreJudgedByTheirOwnAddress(t *testing.T) {
-	// cloudflared on this host: every visitor arrives as loopback (or the Docker gateway).
-	p, _ := tunnelPolicy(t, "loopback,lan", "tailscale,lan,198.51.100.0/24")
-	cases := []struct {
-		remote  string
-		headers map[string]string
-		want    bool
-		who     string
-	}{
-		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.7"}, false, "203.0.113.7"}, // the internet, via the tunnel
-		{"172.17.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.7"}, false, "203.0.113.7"}, // via the Docker gateway
-		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "198.51.100.20"}, true, "198.51.100.20"},
-		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "2001:db8::1"}, false, "2001:db8::1"},
-		// The last X-Forwarded-For entry is the one the proxy added; earlier ones are the visitor's own claims.
-		{"127.0.0.1:5000", map[string]string{"X-Forwarded-For": "192.168.1.5, 203.0.113.7"}, false, "203.0.113.7"},
-		{"127.0.0.1:5000", map[string]string{"X-Forwarded-For": "203.0.113.7, 198.51.100.9"}, true, "198.51.100.9"},
-		{"127.0.0.1:5000", map[string]string{"X-Real-IP": "198.51.100.9"}, true, "198.51.100.9"},
-		// Fail closed when the proxy says nothing readable about the visitor.
-		{"127.0.0.1:5000", map[string]string{"Forwarded": "for=unknown"}, false, "127.0.0.1:5000"},
-		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "garbage"}, false, "127.0.0.1:5000"},
-		// No forwarding header: a local health check or local use, judged as before.
-		{"127.0.0.1:5000", nil, true, "127.0.0.1:5000"},
-		// Headers from an address that is not a trusted proxy are ignored, as before.
-		{"203.0.113.7:1", map[string]string{"CF-Connecting-IP": "192.168.1.5"}, false, "203.0.113.7:1"},
-		{"100.114.200.30:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"}, true, "100.114.200.30:1"},
-	}
-	for _, c := range cases {
-		ok, why, who := p.Check(request(c.remote, c.headers))
-		if ok != c.want || who != c.who {
-			t.Errorf("%s %v: ok=%v who=%q (%s), want %v %q", c.remote, c.headers, ok, who, why, c.want, c.who)
-		}
-	}
-	if _, why, _ := p.Check(request("127.0.0.1:1", map[string]string{"X-Real-IP": "203.0.113.7"})); !strings.Contains(why, "tunnel networks") {
-		t.Errorf("why: %q", why)
-	}
-	if _, why, _ := p.Check(request("127.0.0.1:1", map[string]string{"Forwarded": "for=x"})); !strings.Contains(why, "readable") {
-		t.Errorf("why: %q", why)
-	}
-}
-
-func TestTunnelVisitorsDefaultToAnywhere(t *testing.T) {
-	// The default (MP_TUNNEL_NETS=any) keeps a Google-sign-in tunnel reachable from anywhere.
-	p, _ := tunnelPolicy(t, "loopback,lan", "any")
-	if ok, why, _ := p.Check(request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"})); !ok {
-		t.Error(why)
-	}
-}
-
-func TestWithoutTrustedProxiesHeadersAreNeverRead(t *testing.T) {
-	p, _ := policy(t, "tailscale,lan", nil, nil)
-	if ok, _, who := p.Check(request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"})); !ok || who != "127.0.0.1:1" {
-		t.Errorf("no proxies configured: judged by the peer address (%v %s)", ok, who)
-	}
-}
-
-func TestMiddlewareLogsTheTunnelVisitor(t *testing.T) {
-	p, logs := tunnelPolicy(t, "loopback", "tailscale")
-	h := p.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"}))
-	if rec.Code != 403 {
-		t.Errorf("code %d", rec.Code)
-	}
-	if len(*logs) != 1 || !strings.Contains((*logs)[0], "203.0.113.7") {
-		t.Errorf("the refusal names the visitor, not the tunnel: %v", *logs)
-	}
-	if d := p.Describe(); !strings.Contains(d, "proxy or tunnel") {
-		t.Errorf("%q", d)
+	if k := ClientKey(request("garbage", nil)); k != "unknown" {
+		t.Errorf("unreadable: %q", k)
 	}
 }

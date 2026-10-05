@@ -228,8 +228,18 @@ func TestAuthFlowAndCSRF(t *testing.T) {
 	var sess map[string]any
 	rec := e.do("GET", "/api/session", nil, nil)
 	decode(t, rec, &sess)
-	if sess["authenticated"] != false || sess["authRequired"] != true || sess["canDelete"] != true || sess["vgmstream"] != false {
+	if sess["authenticated"] != false || sess["authRequired"] != true || sess["password"] != true {
 		t.Errorf("session: %v", sess)
+	}
+	for _, k := range []string{"canDelete", "canUpload", "vgmstream", "ffmpeg", "uploadDir", "maxUploadMB", "sevenZip"} {
+		if _, leaked := sess[k]; leaked {
+			t.Errorf("a visitor who is not signed in must not learn %s: %v", k, sess)
+		}
+	}
+	sess = nil
+	decode(t, e.do("GET", "/api/session", nil, e.login()), &sess)
+	if sess["authenticated"] != true || sess["canDelete"] != true || sess["vgmstream"] != false {
+		t.Errorf("signed-in session: %v", sess)
 	}
 
 	wantStatus(t, e.do("POST", "/api/login", map[string]string{"password": "nope"}, nil), 401)
@@ -271,6 +281,44 @@ func TestAuthDisabled(t *testing.T) {
 	if sess["authRequired"] != false || sess["authenticated"] != true {
 		t.Errorf("session: %v", sess)
 	}
+}
+
+func TestLoginIsRateLimitedPerClient(t *testing.T) {
+	e := newEnv(t, false, true)
+	from := func(ip string) func(*http.Request) {
+		return func(r *http.Request) { r.RemoteAddr = ip + ":1234" }
+	}
+	for i := 0; i < 10; i++ {
+		wantStatus(t, e.do("POST", "/api/login", map[string]string{"password": "nope"}, nil, from("203.0.113.7")), 401)
+	}
+	rec := e.do("POST", "/api/login", map[string]string{"password": "pw"}, nil, from("203.0.113.7"))
+	wantStatus(t, rec, 429)
+	if !strings.Contains(rec.Body.String(), "too many") {
+		t.Errorf("body: %s", rec.Body)
+	}
+	// Someone else is not locked out, and a success clears the count.
+	wantStatus(t, e.do("POST", "/api/login", map[string]string{"password": "nope"}, nil, from("198.51.100.1")), 401)
+	wantStatus(t, e.do("POST", "/api/login", map[string]string{"password": "pw"}, nil, from("198.51.100.1")), 200)
+	if !e.srv.logins.Allowed("198.51.100.1") {
+		t.Error("success clears the failures")
+	}
+}
+
+func TestLoginWaitsForAHashingSlot(t *testing.T) {
+	e := newEnv(t, false, true)
+	for i := 0; i < cap(e.srv.hashing); i++ {
+		e.srv.hashing <- struct{}{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := e.do("POST", "/api/login", map[string]string{"password": "pw"}, nil, func(r *http.Request) { *r = *r.WithContext(ctx) })
+	if len(rec.Result().Cookies()) != 0 {
+		t.Error("a request given up while waiting must not sign in")
+	}
+	for i := 0; i < cap(e.srv.hashing); i++ {
+		<-e.srv.hashing
+	}
+	wantStatus(t, e.do("POST", "/api/login", map[string]string{"password": "pw"}, nil), 200)
 }
 
 func TestNoLoginRefusesProxiedRequests(t *testing.T) {

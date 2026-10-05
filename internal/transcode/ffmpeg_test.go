@@ -70,7 +70,7 @@ func TestFFmpegCommands(t *testing.T) {
 	if err != nil || in.Title != "Sonic Next Gen Mix" {
 		t.Fatalf("metadata: %+v %v", in, err)
 	}
-	if gotName != "/usr/bin/ffprobe" || gotArgs[len(gotArgs)-1] != "/m/a.wma" || !strings.Contains(strings.Join(gotArgs, " "), "-protocol_whitelist file") {
+	if gotName != "/usr/bin/ffprobe" || gotArgs[len(gotArgs)-1] != "/m/a.wma" || !strings.Contains(strings.Join(gotArgs, " "), "-protocol_whitelist file -format_whitelist "+formats) {
 		t.Errorf("probe command: %s %v", gotName, gotArgs)
 	}
 
@@ -83,8 +83,16 @@ func TestFFmpegCommands(t *testing.T) {
 			t.Errorf("decode command lacks %q: %s", want, joined)
 		}
 	}
-	if gotName != "/usr/bin/ffmpeg" || strings.Index(joined, "-protocol_whitelist") > strings.Index(joined, "-i ") {
-		t.Errorf("the protocol whitelist is an input option and must come before -i: %s", joined)
+	if gotName != "/usr/bin/ffmpeg" || strings.Index(joined, "-protocol_whitelist") > strings.Index(joined, "-i ") ||
+		strings.Index(joined, "-format_whitelist") > strings.Index(joined, "-i ") {
+		t.Errorf("the whitelists are input options and must come before -i: %s", joined)
+	}
+	for _, banned := range []string{"hls", "concat", "image2", "tee"} {
+		for _, f := range strings.Split(formats, ",") {
+			if f == banned {
+				t.Errorf("%s must not be an allowed input format", banned)
+			}
+		}
 	}
 }
 

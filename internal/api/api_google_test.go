@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -71,7 +72,7 @@ func startGoogle(t *testing.T, e *env, g *gfake) (*http.Cookie, string) {
 		}
 	}
 	state := loc.Query().Get("state")
-	if cookie == nil || cookie.Value != state || !cookie.HttpOnly || !cookie.Secure ||
+	if cookie == nil || !strings.HasPrefix(cookie.Value, state+".") || !cookie.HttpOnly || !cookie.Secure ||
 		cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/auth/google/" {
 		t.Fatalf("state cookie must bind the browser to the sign-in: %+v", cookie)
 	}
@@ -146,8 +147,11 @@ func TestGoogleCallbackRefusals(t *testing.T) {
 	wantStatus(t, callback(e, nil, "state="+state+"&code=abc"), 400)
 	wantStatus(t, callback(e, &http.Cookie{Name: oauthCookie, Value: "other"}, "state="+state+"&code=abc"), 400)
 	wantStatus(t, callback(e, &http.Cookie{Name: oauthCookie, Value: ""}, "code=abc"), 400)
-	// A matching cookie for a state the server never issued.
+	// A cookie the server never issued.
 	wantStatus(t, callback(e, &http.Cookie{Name: oauthCookie, Value: "forged"}, "state=forged&code=abc"), 400)
+	// The browser's cookie for another sign-in.
+	other, _ := startGoogle(t, e, g)
+	wantStatus(t, callback(e, other, "state="+state+"&code=abc"), 400)
 	// The user pressed Cancel at Google.
 	rec := callback(e, cookie, "state="+state+"&error=access_denied")
 	wantStatus(t, rec, 401)
@@ -191,13 +195,19 @@ func TestGoogleCallbackWithoutSessionRandomness(t *testing.T) {
 	wantStatus(t, callback(e, cookie, "state="+state+"&code=abc"), 500)
 }
 
-func TestGoogleStartRefusesAFlood(t *testing.T) {
-	e, _ := googleEnv(t, "me@gmail.com")
-	var last int
+func TestGoogleStartFloodDoesNotLockTheOwnerOut(t *testing.T) {
+	e, g := googleEnv(t, "me@gmail.com")
 	for i := 0; i < 1100; i++ {
-		last = e.do("GET", "/auth/google/start", nil, nil).Code
+		wantStatus(t, e.do("GET", "/auth/google/start", nil, nil), http.StatusFound)
 	}
-	if last != http.StatusTooManyRequests {
-		t.Fatalf("unfinished sign-ins must be capped, last status %d", last)
+	cookie, state := startGoogle(t, e, g)
+	if rec := callback(e, cookie, "state="+state+"&code=abc"); rec.Code != http.StatusFound {
+		t.Fatalf("the owner must still get in: %d %s", rec.Code, rec.Body)
 	}
+}
+
+func TestGoogleStartWithoutRandomness(t *testing.T) {
+	e, _ := googleEnv(t, "me@gmail.com")
+	e.srv.startGoogle = func() (string, string, string, error) { return "", "", "", errors.New("no entropy") }
+	wantStatus(t, e.do("GET", "/auth/google/start", nil, nil), 500)
 }
