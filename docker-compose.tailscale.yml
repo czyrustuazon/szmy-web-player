@@ -1,0 +1,9 @@
+# Added automatically by the Makefile when MP_KNOWN_DEVICES is set in .env.
+#
+# Mounts tailscaled's local socket so the app can ask which of your devices is connecting (the
+# same check anime-db-stream does for KNOWN_DEVICES). It is a separate file because Docker would
+# create a *directory* at the host path if the socket did not exist, which breaks tailscaled.
+services:
+  masterplayer:
+    volumes:
+      - ${TAILSCALE_SOCKET_HOST_PATH:-/var/run/tailscale/tailscaled.sock}:/var/run/tailscale/tailscaled.sock

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"masterplayer/internal/access"
 	"masterplayer/internal/errlog"
 	"masterplayer/internal/transcode"
 )
@@ -135,4 +136,48 @@ func TestUploadsFollowTheUploadFolderNotTheLibraryRoot(t *testing.T) {
 	}
 	// Bypassing the UI gets a plain failure (nothing can be created there), not a crash.
 	wantStatus(t, e.do("POST", "/api/upload/start", map[string]string{"title": "x"}, nil), 500)
+}
+
+func TestAccessPolicyGuardsEverythingIncludingStaticFilesAndHealth(t *testing.T) {
+	e := newEnv(t, false, false)
+	nets, err := access.ParseNets("tailscale,192.168.1.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.Access = access.New(nets, nil, nil, func(string, ...any) {})
+	h := e.srv.Handler()
+
+	get := func(path, remote string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	// httptest's default peer is 192.0.2.1, a public (documentation) address.
+	for _, path := range []string{"/", "/api/session", "/api/browse", "/api/stream?p=a.mp3", "/healthz", "/sw.js"} {
+		if rec := get(path, "203.0.113.50:5555"); rec.Code != 403 {
+			t.Errorf("%s from the public internet: %d", path, rec.Code)
+		}
+	}
+	for _, remote := range []string{"100.114.200.30:1", "192.168.1.20:1", "127.0.0.1:1"} {
+		if rec := get("/api/session", remote); rec.Code != 200 {
+			t.Errorf("%s should be let in: %d", remote, rec.Code)
+		}
+	}
+	if rec := get("/api/session", "192.168.2.20:1"); rec.Code != 403 {
+		t.Errorf("a home subnet that was not listed: %d", rec.Code)
+	}
+	// Writes are refused as well, before the CSRF check or anything else runs.
+	req := httptest.NewRequest("DELETE", "/api/track?p=a.mp3", nil)
+	req.RemoteAddr = "203.0.113.50:1"
+	req.Header.Set(csrfHeader, csrfValue)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 403 {
+		t.Errorf("delete from outside: %d", rec.Code)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, "a.mp3")); err != nil {
+		t.Error("nothing may be deleted by a refused client")
+	}
 }

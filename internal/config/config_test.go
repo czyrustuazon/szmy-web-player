@@ -28,6 +28,29 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestAccessSettings(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AllowedNets != "tailscale,lan" || len(c.KnownDevices) != 0 || c.TailscaleSocket != "/var/run/tailscale/tailscaled.sock" {
+		t.Fatalf("secure by default: %+v", c)
+	}
+	c, err = Load(env(map[string]string{
+		"MP_ALLOWED_NETS": "tailscale, 192.168.1.0/24", "MP_KNOWN_DEVICES": "MainServer, 4090;iphone182",
+		"MP_TAILSCALE_SOCKET": "/tmp/ts.sock",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AllowedNets != "tailscale, 192.168.1.0/24" || strings.Join(c.KnownDevices, ",") != "mainserver,4090,iphone182" || c.TailscaleSocket != "/tmp/ts.sock" {
+		t.Fatalf("overrides: %+v", c)
+	}
+	if _, err := Load(env(map[string]string{"MP_ALLOWED_NETS": "wifi"})); err == nil || !strings.Contains(err.Error(), "MP_ALLOWED_NETS") {
+		t.Errorf("a typo in the network list must stop startup, not silently open or close the door: %v", err)
+	}
+}
+
 func TestBlankPasswordMeansOpenAccess(t *testing.T) {
 	for _, pw := range []string{"", " ", "\t \n"} {
 		c, err := Load(env(map[string]string{"MP_ADMIN_PASSWORD": pw}))

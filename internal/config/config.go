@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"masterplayer/internal/access"
 )
 
 // Config is the full runtime configuration.
@@ -26,6 +28,10 @@ type Config struct {
 	TrashMinutes     int
 	CookieSecure     bool
 	ReadOnly         bool // force read-only: no delete, no upload
+
+	AllowedNets     string   // who may connect, by network: see package access (default "tailscale,lan")
+	KnownDevices    []string // if set, Tailscale peers must be one of these device names
+	TailscaleSocket string   // tailscaled's local API socket, used to name Tailscale peers
 }
 
 // Load reads configuration through getenv (os.Getenv in production).
@@ -71,6 +77,10 @@ func Load(getenv func(string) string) (Config, error) {
 		TrashMinutes:     int(num("MP_TRASH_MINUTES", 10)),
 		CookieSecure:     boolean("MP_COOKIE_SECURE"),
 		ReadOnly:         boolean("MP_READ_ONLY"),
+
+		AllowedNets:     str("MP_ALLOWED_NETS", "tailscale,lan"),
+		KnownDevices:    access.ParseDevices(getenv("MP_KNOWN_DEVICES")),
+		TailscaleSocket: str("MP_TAILSCALE_SOCKET", "/var/run/tailscale/tailscaled.sock"),
 	}
 	if firstErr != nil {
 		return Config{}, firstErr
@@ -92,6 +102,9 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if c.TranscodeWorkers < 1 {
 		return Config{}, fmt.Errorf("MP_TRANSCODE_WORKERS must be at least 1")
+	}
+	if _, err := access.ParseNets(c.AllowedNets); err != nil {
+		return Config{}, fmt.Errorf("MP_ALLOWED_NETS: %w", err)
 	}
 	if c.TrashMinutes < 1 {
 		return Config{}, fmt.Errorf("MP_TRASH_MINUTES must be at least 1")

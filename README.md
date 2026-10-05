@@ -25,9 +25,13 @@ make logs                   # follow the logs
 Open <http://localhost:8787> (change the host port with `PORT` in `.env`). The app opens on the
 **player**, even when the library is empty; use the **Upload** tab to add music.
 
-**No password, no login:** with `MP_ADMIN_PASSWORD` blank (the default), anyone who can reach
-the port can play, upload and delete. That is fine on a private network; set a password in
-`.env` to turn the login on.
+**Who can connect:** by default only your own network, like `animedb.haruhi.one`: devices on
+your **Tailscale network** and on your **home network**. Everything else, including the public
+internet through a router port-forward, is refused with a 403 (see [Who can connect](#who-can-connect)).
+
+**No password, no login:** with `MP_ADMIN_PASSWORD` blank (the default), anyone *who is allowed to
+connect* can play, upload and delete. Combined with the access rules above that is usually what you
+want on a private network; set a password in `.env` to add a login on top.
 
 `make help` lists every target (`dev` for fast rebuilds, `down`, `restart`, `shell`,
 `status`, `clean`, `test`, `smoke`, `deploy`).
@@ -115,6 +119,33 @@ Settings choose what happens at the end of the intro: **loop N times then fade o
 
 Keyboard (desktop): `Space` play/pause, `←`/`→` seek 5 s (`Shift` = previous/next), `↑`/`↓`
 volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `L` locate, `/` search, `Esc` close.
+
+## Who can connect
+
+The player is meant for you and your devices, the same as `animedb.haruhi.one` and
+`anime-db-stream`. Every connection is checked, before anything else happens (login page and static
+files included), by the address it **really** comes from. Headers such as `X-Forwarded-For` are
+ignored, because anyone can forge them.
+
+| Setting | Meaning |
+|---|---|
+| `MP_ALLOWED_NETS` | Networks that may connect. Default `tailscale,lan`: your Tailscale network (`100.64.0.0/10`) and private home-network ranges. Add or swap in your own CIDR such as `192.168.1.0/24`. Use just `tailscale` for the tailnet only. Loopback is always allowed (health checks). |
+| `MP_KNOWN_DEVICES` | Optional. Names of your devices (from `tailscale status`). Tailscale peers must then be one of them. The name comes from this host's own `tailscaled`, so a node of someone else sharing your tailnet cannot get in. Home-network devices are covered by `MP_ALLOWED_NETS`. Needs `tailscaled` on the host: the Makefile then mounts its socket via `docker-compose.tailscale.yml`. |
+| `BIND_ADDR` | Host address the port is published on. `0.0.0.0` (default) is every IPv4 interface; set it to the host's Tailscale address (`tailscale ip -4`) to listen on the tailnet only, like `BIND_ADDR` in `anime-db-stream`. |
+
+To reach it by name, as with `animedb.haruhi.one`, add a DNS record for a name of your choice that
+points to the server's Tailscale address. Only devices on your tailnet can route to that address.
+
+Notes:
+
+- The port is published on IPv4 only on purpose. Docker's IPv6 forwarding hides the real client
+  address, which would defeat the check.
+- Do not put this behind a public reverse proxy: the check sees the proxy's address, not the visitor's.
+- A refusal is logged once per address per ten minutes, so a scanner cannot flood the log.
+- "At home" means the home network's private address ranges. A Tailscale device that is away from home
+  reaches you through the tailnet and is allowed like any tailnet device (or only if it is a known
+  device, when `MP_KNOWN_DEVICES` is set). To allow the tailnet but not direct home-network
+  connections, use `MP_ALLOWED_NETS=tailscale`.
 
 ## Search
 

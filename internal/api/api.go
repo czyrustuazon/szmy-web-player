@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"masterplayer/internal/access"
 	"masterplayer/internal/auth"
 	"masterplayer/internal/config"
 	"masterplayer/internal/errlog"
@@ -48,6 +49,7 @@ type Deps struct {
 	Up     *upload.Manager
 	Log    *errlog.Logger
 	Static fs.FS
+	Access *access.Policy // who may connect at all; nil allows every address
 }
 
 type undoRec struct {
@@ -101,7 +103,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/resume", s.protect(s.putResume))
 	mux.HandleFunc("GET /api/errors", s.protect(s.errorLines))
 	mux.Handle("/", s.static())
-	return s.secure(mux)
+	h := s.secure(mux)
+	if s.Access != nil {
+		h = s.Access.Middleware(h) // outermost: a refused address never reaches anything, not even the login or static files
+	}
+	return h
 }
 
 // secure adds security headers and CSRF protection: every state-changing

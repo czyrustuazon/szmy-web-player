@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"masterplayer/internal/access"
 	"masterplayer/internal/api"
 	"masterplayer/internal/auth"
 	"masterplayer/internal/config"
@@ -87,7 +89,18 @@ func run(cfg config.Config) error {
 	}
 
 	up := upload.New(lib.Root(), cfg.UploadSubdir, cfg.MaxUploadMB<<20, cfg.MinFreeMB<<20)
-	srv := api.New(api.Deps{Cfg: cfg, Lib: lib, Store: st, Auth: a, TX: tx, Up: up, Log: logger, Static: web.FS})
+	nets, err := access.ParseNets(cfg.AllowedNets) // already validated by config.Load
+	if err != nil {
+		return err
+	}
+	var whois access.WhoisFunc
+	if len(cfg.KnownDevices) > 0 {
+		whois = access.TailscaleWhois(cfg.TailscaleSocket)
+	}
+	policy := access.New(nets, cfg.KnownDevices, whois, log.Printf)
+	fmt.Println(policy.Describe())
+
+	srv := api.New(api.Deps{Cfg: cfg, Lib: lib, Store: st, Auth: a, TX: tx, Up: up, Log: logger, Static: web.FS, Access: policy})
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
 		Handler:           srv.Handler(),

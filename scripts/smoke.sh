@@ -59,6 +59,19 @@ curl -fsS "http://127.0.0.1:${OPEN_PORT}/api/browse" | grep -q 'test.mp3'
 docker logs "$ocid" 2>&1 | grep -q 'NO LOGIN'
 echo "open access (blank password) ok"
 
+# Access control: with only Tailscale allowed, a request from the Docker host (a private
+# address) is refused with 403, while the health check from inside the container (loopback)
+# still passes. A forged X-Forwarded-For must not change anything.
+DENY_PORT=$((PORT + 2))
+dcid=$(docker run -d -p "${DENY_PORT}:8080" -e MP_ALLOWED_NETS=tailscale -e PUID="$(id -u)" -e PGID="$(id -g)"   -v "$tmp/music:/music" -v "$tmp/data-deny:/data" "$IMG")
+trap 'docker rm -f "$cid" "$ocid" "$dcid" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
+sleep 3
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 100.114.200.30' "http://127.0.0.1:${DENY_PORT}/api/session")
+[ "$code" = "403" ] || { echo "expected 403 from a refused address, got $code"; docker logs "$dcid"; exit 1; }
+docker exec "$dcid" masterplayer -healthcheck || { echo "the in-container health check must still pass"; exit 1; }
+docker logs "$dcid" 2>&1 | grep -q 'access: refused'
+echo "access control ok (refused address gets 403, health check still passes)"
+
 if [ "$(docker inspect -f '{{.Architecture}}' "$IMG")" = "amd64" ]; then
   docker run --rm --entrypoint vgmstream-cli "$IMG" -h >/dev/null 2>&1 || true
   docker run --rm --entrypoint sh "$IMG" -c 'test -x /usr/local/bin/vgmstream-cli'

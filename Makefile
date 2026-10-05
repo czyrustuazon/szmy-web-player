@@ -2,7 +2,9 @@
 # Requires: Docker + Docker Compose v2, and `make` (Git Bash / WSL / Linux).
 # Local (non-Docker) targets at the bottom need Go and/or Node.
 
-COMPOSE ?= docker compose
+# The tailscaled socket is only mounted when device checking is on (MP_KNOWN_DEVICES set in .env).
+KNOWN_DEVICES := $(shell grep -E '^MP_KNOWN_DEVICES=.+' .env 2>/dev/null)
+COMPOSE ?= docker compose$(if $(KNOWN_DEVICES), -f docker-compose.yml -f docker-compose.tailscale.yml)
 SERVICE ?= masterplayer
 
 .DEFAULT_GOAL := help
