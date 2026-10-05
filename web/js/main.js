@@ -44,8 +44,8 @@ const list = new VirtualList($('#list'), ROW_H, renderRow);
 
 // The favorites and talk lists work alike: a track is marked with a button on its row and in the player.
 const MARKS = {
-  fav: { view: 'favorites', tracks: 'favTracks', set: api.setFavorite, on: 'heart-fill', off: 'heart', add: 'Add to favorites', remove: 'Remove from favorites' },
-  talk: { view: 'talk', tracks: 'talkTracks', set: api.setTalk, on: 'mic-fill', off: 'mic', add: 'Mark as talk', remove: 'Remove from talk' },
+  fav: { view: 'favorites', name: 'favorites', tracks: 'favTracks', set: api.setFavorite, on: 'heart-fill', off: 'heart', add: 'Add to favorites', remove: 'Remove from favorites' },
+  talk: { view: 'talk', name: 'talk', tracks: 'talkTracks', set: api.setTalk, on: 'mic-fill', off: 'mic', add: 'Mark as talk', remove: 'Remove from talk' },
 };
 const isMarked = (v) => v === 'favorites' || v === 'talk'; // a view or source that is one of those lists
 const markedTracks = (v) => (v === 'talk' ? state.talkTracks : state.favTracks);
@@ -400,8 +400,9 @@ function setMarkLocal(kind, path, on) {
   if (state.meta?.path === path) state.meta[kind] = on;
 }
 
-// Toggles a track's favorite (kind 'fav') or talk (kind 'talk') mark.
-async function toggleMark(kind, e) {
+// Toggles a track's favorite (kind 'fav') or talk (kind 'talk') mark, and says so in a toast
+// with Undo (quiet: no toast, as when undoing).
+async function toggleMark(kind, e, { quiet = false } = {}) {
   const m = MARKS[kind];
   const on = !e[kind];
   setMarkLocal(kind, e.path, on);
@@ -422,7 +423,18 @@ async function toggleMark(kind, e) {
     toast(err.message);
     list.refresh();
     renderMarkButtons();
+    return;
   }
+  if (quiet) return;
+  const name = e.title ?? stem(e.name ?? e.path.split('/').pop());
+  toast(on ? `Added ${name} to ${m.name}` : `Removed ${name} from ${m.name}`, {
+    action: 'Undo',
+    ms: 5000,
+    onAction: async () => {
+      await toggleMark(kind, { ...e, [kind]: on }, { quiet: true });
+      if (!on && state.view === m.view) await loadMarked(m.view); // bring the track back into the open list
+    },
+  });
 }
 
 async function renameFolder(e) {
@@ -704,8 +716,8 @@ bind('#fp-repeat', () => {
   renderTransport();
   toast({ off: 'Repeat off', all: 'Repeat all', one: 'Repeat one' }[state.settings.repeat], { ms: 1200 });
 });
-bind('#fp-fav', () => state.meta && toggleMark('fav', { path: state.meta.path, fav: state.meta.fav }));
-bind('#fp-talk', () => state.meta && toggleMark('talk', { path: state.meta.path, talk: state.meta.talk }));
+bind('#fp-fav', () => state.meta && toggleMark('fav', { path: state.meta.path, title: state.meta.title, fav: state.meta.fav }));
+bind('#fp-talk', () => state.meta && toggleMark('talk', { path: state.meta.path, title: state.meta.title, talk: state.meta.talk }));
 bind('#fp-del', () => state.meta && deleteTrack({ path: state.meta.path, name: state.meta.title, title: state.meta.title, fav: state.meta.fav, talk: state.meta.talk }));
 bind('#btn-back', () => state.parent !== null && loadDir(state.parent));
 document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showView(t.dataset.view)));
