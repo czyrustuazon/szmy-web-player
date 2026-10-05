@@ -34,6 +34,13 @@ test('results read naturally', () => {
     describeResult({ state: 'done', tracks: 9136, skipped: 1173, skippedTypes: { txt: 66, jpg: 927, png: 100, log: 20 } }),
     '9136 tracks added, 1173 other files skipped (jpg ×927, png ×100, txt ×66, log ×20)',
   );
+  assert.equal(describeResult({ state: 'done', tracks: 3, duplicates: 59 }), '3 tracks added, 59 already in the library');
+  assert.equal(describeResult({ state: 'done', tracks: 0, duplicates: 1 }), 'Nothing new: 1 already in the library');
+  assert.equal(describeResult({ state: 'done', tracks: 0, duplicates: 4, skipped: 2 }), 'Nothing new: 4 already in the library, 2 other files skipped');
+  assert.equal(
+    describeResult({ state: 'done', tracks: 2, duplicates: 5, skipped: 1, skippedTypes: { txt: 1 } }),
+    '2 tracks added, 5 already in the library, 1 other file skipped (txt ×1)',
+  );
   assert.equal(describeResult({ state: 'failed', error: 'not an audio file' }), 'not an audio file');
   assert.equal(describeResult({ state: 'failed' }), 'Upload failed');
 });
@@ -57,6 +64,8 @@ test('batch summaries', () => {
   assert.deepEqual(summarize([{ state: 'done', tracks: 1 }]), { tracks: 1, bad: 0, text: 'Added 1 track' });
   assert.deepEqual(summarize([{ state: 'done', tracks: 5 }, { state: 'done', tracks: 7 }]), { tracks: 12, bad: 0, text: 'Added 12 tracks' });
   assert.deepEqual(summarize([{ state: 'done', tracks: 2 }, { state: 'failed' }]), { tracks: 2, bad: 1, text: 'Added 2 tracks; 1 failed' });
+  assert.equal(summarize([{ state: 'done', tracks: 4, duplicates: 2 }]).text, 'Added 4 tracks, 2 already there');
+  assert.equal(summarize([{ state: 'done', tracks: 0, duplicates: 7 }]).text, 'Nothing new: 7 already in the library');
   assert.equal(summarize([{ state: 'failed' }]).text, 'Nothing was added (1 file failed)');
   assert.equal(summarize([{ state: 'failed' }, { state: 'corrupted' }]).text, 'Nothing was added (2 files failed)');
 });

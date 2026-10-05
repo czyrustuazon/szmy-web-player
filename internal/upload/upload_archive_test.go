@@ -73,9 +73,11 @@ func TestZipTwoLevelsOfWrappersAndNameCollisions(t *testing.T) {
 	if st := finish(t, m, rel, "one.zip", len(archive)); st.State != Done || st.Tracks != 2 {
 		t.Fatalf("first: %+v", st)
 	}
-	// A second archive with the same file names must not overwrite the first one's files.
+	// A second archive with the same file names but other content must not overwrite the first one's files.
+	other := append(append([]byte{}, mp3...), 0xFF, 0xFB, 0x90, 1)
+	archive = zipOf(t, map[string][]byte{"Artist/Album/a.mp3": other, "Artist/Album/b.mp3": other})
 	send(t, m, rel, "two.zip", archive, 4096)
-	if st := finish(t, m, rel, "two.zip", len(archive)); st.State != Done {
+	if st := finish(t, m, rel, "two.zip", len(archive)); st.State != Done || st.Tracks != 2 || st.Duplicates != 0 {
 		t.Fatalf("second: %+v", st)
 	}
 	files := listTree(t, filepath.Join(root, "uploads", "Batch"))
@@ -818,5 +820,201 @@ func TestIsImageNeedsPictureNameAndContent(t *testing.T) {
 		if got := isImage(filepath.Join(dir, name)); got != want {
 			t.Errorf("isImage(%s) = %v, want %v", name, got, want)
 		}
+	}
+}
+
+
+// ---------------------------------------------------------------- merging and duplicates
+
+func TestStartOrJoinReusesAnExistingFolder(t *testing.T) {
+	m, root := newMgr(t)
+	name1, rel1, err := m.StartOrJoin("Album")
+	if err != nil || name1 != "Album" || rel1 != "uploads/Album" {
+		t.Fatalf("a new folder is created: %q %q %v", name1, rel1, err)
+	}
+	name2, rel2, err := m.StartOrJoin("Album")
+	if err != nil || name2 != "Album" || rel2 != rel1 {
+		t.Fatalf("the folder is reused, not renamed to (2): %q %q %v", name2, rel2, err)
+	}
+	if _, rel, _ := m.Start("Album"); rel != "uploads/Album (2)" {
+		t.Errorf("plain Start still never reuses a folder: %s", rel)
+	}
+	if _, rel, err := m.StartOrJoin(" "); err != nil || rel != "uploads" {
+		t.Errorf("a blank title is the upload folder: %q %v", rel, err)
+	}
+	// A link with that name is not a folder to join.
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "uploads", "Linked")); err == nil {
+		if _, rel, _ := m.StartOrJoin("Linked"); rel != "uploads/Linked (2)" {
+			t.Errorf("a symlink must not be joined: %s", rel)
+		}
+	}
+	// A plain file with that name is not a folder either.
+	os.WriteFile(filepath.Join(root, "uploads", "File"), []byte("x"), 0o644)
+	if _, rel, _ := m.StartOrJoin("File"); rel != "uploads/File (2)" {
+		t.Errorf("a file must not be joined: %s", rel)
+	}
+}
+
+func TestReuploadingAnArchiveIntoItsFolderAddsOnlyWhatIsNew(t *testing.T) {
+	m, root := newMgr(t)
+	rel := start(t, m, "Album")
+	first := zipOf(t, map[string][]byte{"d1/a.mp3": mp3, "d1/b.mp3": mp3, "cover.jpg": jpegBytes})
+	send(t, m, rel, "one.zip", first, 4096)
+	if st := finish(t, m, rel, "one.zip", len(first)); st.Tracks != 2 || st.Images != 1 || st.Duplicates != 0 {
+		t.Fatalf("first: %+v", st)
+	}
+
+	_, rel2, err := m.StartOrJoin("Album")
+	if err != nil || rel2 != rel {
+		t.Fatal(rel2, err)
+	}
+	changed := append(append([]byte{}, mp3...), 0xFF, 0xFB, 0x90, 2)
+	second := zipOf(t, map[string][]byte{
+		"d1/a.mp3": mp3, // identical: skipped
+		"d1/b.mp3": changed, // same name, other bytes: kept beside it
+		"d1/c.mp3": mp3, "d2/x.mp3": mp3, // new
+		"cover.jpg": jpegBytes, // identical picture: skipped
+	})
+	send(t, m, rel2, "two.zip", second, 4096)
+	st := finish(t, m, rel2, "two.zip", len(second))
+	if st.State != Done || st.Tracks != 3 || st.Images != 0 || st.Duplicates != 2 || st.Path != rel {
+		t.Fatalf("second: %+v", st)
+	}
+	got := strings.Join(listTree(t, filepath.Join(root, "uploads", "Album")), ",")
+	if got != "cover.jpg,d1/a.mp3,d1/b (2).mp3,d1/b.mp3,d1/c.mp3,d2/x.mp3" {
+		t.Errorf("tree: %s", got)
+	}
+
+	// The very same archive again changes nothing and says so.
+	third := zipOf(t, map[string][]byte{"d1/a.mp3": mp3, "d2/x.mp3": mp3})
+	send(t, m, rel2, "three.zip", third, 4096)
+	if st := finish(t, m, rel2, "three.zip", len(third)); st.State != Done || st.Tracks != 0 || st.Duplicates != 2 {
+		t.Fatalf("third: %+v", st)
+	}
+	if n := len(listTree(t, filepath.Join(root, "uploads", "Album"))); n != 6 {
+		t.Errorf("nothing may be added by a repeat, have %d files", n)
+	}
+}
+
+func TestMergeKeepsClashingNamesApart(t *testing.T) {
+	m, _ := newMgr(t)
+	dst, src := t.TempDir(), t.TempDir()
+	put := func(base, rel string, data []byte) {
+		os.MkdirAll(filepath.Join(base, filepath.Dir(rel)), 0o755)
+		os.WriteFile(filepath.Join(base, rel), data, 0o644)
+	}
+	put(dst, "x", []byte("a file"))
+	put(dst, "dir/f.mp3", mp3)
+	put(dst, "same.mp3", mp3)
+	put(src, "x/inner.mp3", mp3) // a folder where the library has a file
+	put(src, "dir", mp3)         // a file where the library has a folder
+	put(src, "same.mp3", mp3)
+	put(src, "new.mp3", mp3)
+	put(src, "pic.jpg", jpegBytes)
+
+	var st mergeStats
+	if err := m.merge(src, dst, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st != (mergeStats{Tracks: 3, Images: 1, Duplicates: 1}) {
+		t.Errorf("stats: %+v", st)
+	}
+	got := strings.Join(listTree(t, dst), ",")
+	if got != "dir/f.mp3,dir (2),new.mp3,pic.jpg,same.mp3,x,x (2)/inner.mp3" {
+		t.Errorf("tree: %s", got)
+	}
+
+	// Errors are reported, not swallowed.
+	if err := m.merge(filepath.Join(src, "missing"), dst, &st); err == nil {
+		t.Error("an unreadable source is an error")
+	}
+	put(src, "again.mp3", mp3)
+	m.rename = func(string, string) error { return errors.New("disk on fire") }
+	if err := m.merge(src, dst, &st); err == nil || !strings.Contains(err.Error(), "adding") {
+		t.Errorf("a failed move: %v", err)
+	}
+	// ... also when it happens inside a folder that is being merged into.
+	src2 := t.TempDir()
+	put(src2, "dir/deeper.mp3", mp3)
+	if err := m.merge(src2, dst, &st); err == nil || !strings.Contains(err.Error(), "adding") {
+		t.Errorf("a failed move in a merged folder: %v", err)
+	}
+}
+
+func TestSameContent(t *testing.T) {
+	dir := t.TempDir()
+	big := bytes.Repeat([]byte("0123456789abcdef"), 10000) // more than one 64 KiB block
+	exact := bytes.Repeat([]byte("x"), 64<<10)             // ends exactly on a block boundary
+	altered := append([]byte{}, big...)
+	altered[len(altered)-1] ^= 1
+	earlier := append([]byte{}, big...)
+	earlier[5] ^= 1
+	for name, data := range map[string][]byte{
+		"a": big, "b": big, "c": altered, "d": earlier, "e": big[:100], "x1": exact, "x2": exact, "empty1": nil, "empty2": nil,
+	} {
+		os.WriteFile(filepath.Join(dir, name), data, 0o644)
+	}
+	os.Mkdir(filepath.Join(dir, "folder"), 0o755)
+	p := func(n string) string { return filepath.Join(dir, n) }
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"a", "b", true}, {"a", "c", false}, {"a", "d", false}, {"a", "e", false}, {"x1", "x2", true}, {"empty1", "empty2", true},
+		{"a", "missing", false}, {"missing", "a", false}, {"folder", "a", false}, {"a", "folder", false},
+	} {
+		if got := sameContent(p(c.a), p(c.b)); got != c.want {
+			t.Errorf("sameContent(%s, %s) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestLooseDuplicateIsNotAddedTwice(t *testing.T) {
+	m, root := newMgr(t)
+	rel := start(t, m, "Singles")
+	send(t, m, rel, "song.mp3", mp3, 64)
+	if st := finish(t, m, rel, "song.mp3", len(mp3)); st.State != Done || st.Tracks != 1 {
+		t.Fatalf("first: %+v", st)
+	}
+	send(t, m, rel, "song.mp3", mp3, 64)
+	st := finish(t, m, rel, "song.mp3", len(mp3))
+	if st.State != Done || st.Tracks != 0 || st.Duplicates != 1 || st.Path != rel+"/song.mp3" {
+		t.Fatalf("a repeat is reported as already there: %+v", st)
+	}
+	// The same name with other content is kept as "song (2).mp3".
+	changed := append(append([]byte{}, mp3...), 0xFF, 0xFB, 0x90, 3)
+	send(t, m, rel, "song.mp3", changed, 64)
+	if st := finish(t, m, rel, "song.mp3", len(changed)); st.Tracks != 1 || st.Duplicates != 0 {
+		t.Fatalf("different content: %+v", st)
+	}
+	if got := strings.Join(listTree(t, filepath.Join(root, "uploads", "Singles")), ","); got != "song (2).mp3,song.mp3" {
+		t.Errorf("tree: %s", got)
+	}
+}
+
+func TestALoneFolderThatAlreadyExistsIsMergedNotUnwrapped(t *testing.T) {
+	m, root := newMgr(t)
+	rel := start(t, m, "Album")
+	first := zipOf(t, map[string][]byte{"d1/a.mp3": mp3, "d2/b.mp3": mp3})
+	send(t, m, rel, "one.zip", first, 4096)
+	finish(t, m, rel, "one.zip", len(first))
+
+	// Only d1 has something new: it must still land in d1, not at the top of Album.
+	changed := append(append([]byte{}, mp3...), 0xFF, 0xFB, 0x90, 4)
+	second := zipOf(t, map[string][]byte{"d1/new.mp3": changed})
+	send(t, m, rel, "two.zip", second, 4096)
+	if st := finish(t, m, rel, "two.zip", len(second)); st.Tracks != 1 {
+		t.Fatalf("second: %+v", st)
+	}
+	if got := strings.Join(listTree(t, filepath.Join(root, "uploads", "Album")), ","); got != "d1/a.mp3,d1/new.mp3,d2/b.mp3" {
+		t.Errorf("tree: %s", got)
+	}
+	// A wrapper folder that is not already there is still removed.
+	third := zipOf(t, map[string][]byte{"Wrapper/x.mp3": changed})
+	send(t, m, rel, "three.zip", third, 4096)
+	finish(t, m, rel, "three.zip", len(third))
+	if !exists(filepath.Join(root, "uploads", "Album", "x.mp3")) {
+		t.Error("a new lone folder is a wrapper and is unwrapped")
 	}
 }

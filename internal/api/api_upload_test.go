@@ -142,6 +142,22 @@ func TestUploadEndpointsRequireLoginAndTheCSRFHeader(t *testing.T) {
 	wantStatus(t, e.do("GET", "/api/upload/status?relPath=a&filename=b", nil, nil), 401)
 }
 
+func TestStartCanJoinAnExistingFolder(t *testing.T) {
+	e := newEnv(t, false, false)
+	start := func(body map[string]any) string {
+		var out map[string]string
+		decode(t, e.do("POST", "/api/upload/start", body, nil), &out)
+		return out["relPath"]
+	}
+	first := start(map[string]any{"title": "Album"})
+	if again := start(map[string]any{"title": "Album", "merge": true}); again != first {
+		t.Errorf("merge joins the folder: %s vs %s", again, first)
+	}
+	if other := start(map[string]any{"title": "Album"}); other == first {
+		t.Errorf("without merge a new folder is made: %s", other)
+	}
+}
+
 func TestUploadResumesAfterAnInterruption(t *testing.T) {
 	e := newEnv(t, false, false)
 	rel := e.startBatch("Resumable")

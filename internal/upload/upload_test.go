@@ -381,8 +381,9 @@ func TestLooseCollisionGetsASuffixAndOddNamesAreCleaned(t *testing.T) {
 	m, root := newMgr(t)
 	rel := start(t, m, "x")
 	for i := 0; i < 2; i++ {
-		send(t, m, rel, "dup.mp3", mp3, 1000)
-		if st := finish(t, m, rel, "dup.mp3", len(mp3)); st.State != Done {
+		data := append(append([]byte{}, mp3...), bytes.Repeat([]byte{0xFF, 0xFB, 0x90, byte(i)}, i)...) // same name, different bytes
+		send(t, m, rel, "dup.mp3", data, 1000)
+		if st := finish(t, m, rel, "dup.mp3", len(data)); st.State != Done {
 			t.Fatalf("round %d: %+v", i, st)
 		}
 	}

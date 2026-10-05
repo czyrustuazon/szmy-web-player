@@ -10,6 +10,7 @@ class FakeServer {
     this.done = new Map(); // "rel|name" -> status
     this.calls = [];
     this.starts = 0;
+    this.startBodies = [];
     this.hooks = {}; // failure injection
     this.polls = 0;
     this.archivePolls = 2; // how many "running" answers an archive gets
@@ -26,6 +27,7 @@ class FakeServer {
     switch (u.pathname) {
       case '/api/upload/start':
         this.starts++;
+        this.startBodies.push(body);
         return { name: body.title, relPath: `uploads/${body.title || ''}`.replace(/\/$/, '') };
       case '/api/upload/begin': {
         if (this.hooks.refuse) this.hooks.refuse(body);
@@ -358,4 +360,11 @@ test('storage that throws is tolerated', async () => {
 test('batch signature ignores order', () => {
   assert.equal(batchSignature([file('b', 2), file('a', 1)]), batchSignature([file('a', 1), file('b', 2)]));
   assert.notEqual(batchSignature([file('a', 1)]), batchSignature([file('a', 2)]));
+});
+
+test('merging into an existing folder is requested only when asked for', async () => {
+  const server = new FakeServer();
+  await uploaderFor(server).uploadBatch([file('a.mp3', 10)], { title: 'Album' });
+  await uploaderFor(server).uploadBatch([file('a.mp3', 10)], { title: 'Album', merge: true });
+  assert.deepEqual(server.startBodies, [{ title: 'Album' }, { title: 'Album', merge: true }]);
 });

@@ -629,14 +629,6 @@ func (s *mergeStats) tally(path string, dup bool) {
 
 // sameContent is true when both are regular files with identical bytes.
 func sameContent(a, b string) bool {
-	sa, err := os.Stat(a)
-	if err != nil || !sa.Mode().IsRegular() {
-		return false
-	}
-	sb, err := os.Stat(b)
-	if err != nil || !sb.Mode().IsRegular() || sa.Size() != sb.Size() {
-		return false
-	}
 	fa, err := os.Open(a)
 	if err != nil {
 		return false
@@ -647,6 +639,11 @@ func sameContent(a, b string) bool {
 		return false
 	}
 	defer fb.Close()
+	ia, errA := fa.Stat()
+	ib, errB := fb.Stat()
+	if errA != nil || errB != nil || !ia.Mode().IsRegular() || !ib.Mode().IsRegular() || ia.Size() != ib.Size() {
+		return false
+	}
 	bufA, bufB := make([]byte, 64<<10), make([]byte, 64<<10)
 	for {
 		na, errA := io.ReadFull(fa, bufA)
@@ -655,7 +652,7 @@ func sameContent(a, b string) bool {
 			return false
 		}
 		if errA != nil || errB != nil {
-			return errA == errB // both ended together, or one read failed
+			return errA == errB // both ended together
 		}
 	}
 }
@@ -742,7 +739,9 @@ func (m *Manager) runArchive(key, clean, destDir, stagingPath, metaPath string, 
 		discard(stagingPath, metaPath)
 		return
 	}
-	flattenWrapper(tmp)
+	if !joinsExistingFolder(tmp, destDir) {
+		flattenWrapper(tmp)
+	}
 	var added mergeStats
 	if err := m.merge(tmp, destDir, &added); err != nil {
 		fail("%v", err)
@@ -1039,6 +1038,19 @@ func (m *Manager) Report(relPath, filename string) (string, error) {
 		return "", ErrNoReport
 	}
 	return p, nil
+}
+
+// joinsExistingFolder is true when the archive holds a single folder that already exists in the
+// destination. That folder is then real content to merge into, not a wrapper to remove: without
+// this, an archive with a few new files for one album would lose its folder name and land at the
+// top of the destination.
+func joinsExistingFolder(tmp, destDir string) bool {
+	entries, err := os.ReadDir(tmp)
+	if err != nil || len(entries) != 1 || !entries[0].IsDir() {
+		return false
+	}
+	st, err := os.Lstat(filepath.Join(destDir, entries[0].Name()))
+	return err == nil && st.IsDir()
 }
 
 // flattenWrapper moves a lone top-level folder's contents up into dir, for as
