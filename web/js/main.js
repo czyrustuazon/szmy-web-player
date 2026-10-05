@@ -18,8 +18,8 @@ let searchToken = 0; // lets a newer keystroke cancel an older search
 const state = {
   caps: {},
   settings: null,
-  view: 'player', // player | library | favorites | upload: what the main area shows
-  source: 'library', // library | favorites: where the play queue comes from
+  view: 'player', // player | library | favorites | talk | upload: what the main area shows
+  source: 'library', // library | favorites | talk: where the play queue comes from
   libLoaded: false,
   libStale: false,
   uploadView: null,
@@ -27,6 +27,7 @@ const state = {
   parent: null,
   entries: [],
   favTracks: [],
+  talkTracks: [],
   libTracks: null, // cached playable list for the whole library
   meta: null,
   playToken: 0,
@@ -40,6 +41,19 @@ const state = {
 // ------------------------------------------------------------------ list
 
 const list = new VirtualList($('#list'), ROW_H, renderRow);
+
+// The favorites and talk lists work alike: a track is marked with a button on its row and in the player.
+const MARKS = {
+  fav: { view: 'favorites', tracks: 'favTracks', set: api.setFavorite, on: 'heart-fill', off: 'heart', add: 'Add to favorites', remove: 'Remove from favorites' },
+  talk: { view: 'talk', tracks: 'talkTracks', set: api.setTalk, on: 'mic-fill', off: 'mic', add: 'Mark as talk', remove: 'Remove from talk' },
+};
+const isMarked = (v) => v === 'favorites' || v === 'talk'; // a view or source that is one of those lists
+const markedTracks = (v) => (v === 'talk' ? state.talkTracks : state.favTracks);
+
+function markButton(kind, on) {
+  const m = MARKS[kind];
+  return `<button class="ib ${kind}${on ? ' on' : ''}" data-act="${kind}" aria-label="${on ? m.remove : m.add}">${icon(on ? m.on : m.off)}</button>`;
+}
 
 function stem(name) {
   const i = name.lastIndexOf('.');
@@ -56,7 +70,7 @@ function renderRow(e) {
   row.className = `row${current ? ' current' : ''}${!e.isDir && !e.playable ? ' dim' : ''}`;
   let sub = '';
   if (!e.isDir) {
-    sub = search.active || state.source === 'favorites' ? dirOf(e.path) : `${kindLabel(e.kind, e.path)} · ${fmtSize(e.size)}`;
+    sub = search.active || isMarked(state.source) ? dirOf(e.path) : `${kindLabel(e.kind, e.path)} · ${fmtSize(e.size)}`;
   }
   const name = e.isDir ? e.name : e.playable ? stem(e.name) : e.name;
   let nameHTML = escapeHTML(name);
@@ -69,12 +83,12 @@ function renderRow(e) {
   }
   let actions = '';
   if (e.isDir) {
-    if (state.caps.canDelete && !search.active && state.source !== 'favorites') {
+    if (state.caps.canDelete && !search.active && !isMarked(state.source)) {
       actions = `<button class="ib" data-act="rename" aria-label="Rename folder">${icon('edit')}</button><button class="ib del" data-act="del" aria-label="Delete folder">${icon('trash')}</button>`;
     }
     actions += icon('chev');
   } else if (e.playable) {
-    actions = `<button class="ib fav${e.fav ? ' on' : ''}" data-act="fav" aria-label="${e.fav ? 'Remove from favorites' : 'Add to favorites'}">${icon(e.fav ? 'heart-fill' : 'heart')}</button>`;
+    actions = markButton('talk', e.talk) + markButton('fav', e.fav);
     if (state.caps.canDelete) actions += `<button class="ib del" data-act="del" aria-label="Delete">${icon('trash')}</button>`;
   }
   row.innerHTML = `${icon(e.isDir ? 'folder' : 'music')}<div class="rtxt"><div class="rname">${nameHTML}</div><div class="rsub">${subHTML}</div></div><div class="ractions">${actions}</div>`;
@@ -87,7 +101,7 @@ $('#list').addEventListener('click', (ev) => {
   const e = list.items[Number(row.dataset.idx)];
   if (!e) return;
   const act = ev.target.closest('button')?.dataset.act;
-  if (act === 'fav') return void toggleFav(e);
+  if (act === 'fav' || act === 'talk') return void toggleMark(act, e);
   if (act === 'del') return void deleteTrack(e);
   if (act === 'rename') return void renameFolder(e);
   if (e.isDir) return void loadDir(e.path);
@@ -111,9 +125,11 @@ async function loadDir(dir, { keepScroll = false } = {}) {
   }
 }
 
-async function loadFavorites() {
+// Loads the favorites or the talk list.
+async function loadMarked(view) {
   try {
-    state.favTracks = (await api.favorites()).tracks;
+    if (view === 'talk') state.talkTracks = (await api.talk()).tracks;
+    else state.favTracks = (await api.favorites()).tracks;
     renderHeader();
     list.setItems(currentItems());
     updateEmpty();
@@ -122,21 +138,23 @@ async function loadFavorites() {
   }
 }
 
-// What the list shows: search results while searching, else the folder or the favorites.
+// What the list shows: search results while searching, else the folder, the favorites or the talk list.
 function currentItems() {
   if (search.active) return search.items();
-  return state.view === 'favorites' ? state.favTracks : state.entries;
+  return isMarked(state.view) ? markedTracks(state.view) : state.entries;
 }
 
 // The "nothing here" hint over the list, worded for the situation.
 function updateEmpty() {
   const v = state.view;
   let text = null;
-  if (v === 'library' || v === 'favorites') {
+  if (v === 'library' || isMarked(v)) {
     if (search.active) {
       if (!search.hits.length) text = `No matches for “${search.query}”.`;
     } else if (v === 'favorites' && !state.favTracks.length) {
       text = 'No favorites yet. Tap the heart on a track.';
+    } else if (v === 'talk' && !state.talkTracks.length) {
+      text = 'No talk tracks yet. Tap the microphone on a track that is speech only.';
     } else if (v === 'library' && state.libLoaded && !state.dir && !state.entries.length) {
       text = 'Your library is empty. Use the Upload tab to add music.';
     }
@@ -148,7 +166,7 @@ function updateEmpty() {
 // ---- search
 
 // Runs the search box's query over the tracks of the current list (the whole library, or the
-// favorites) and shows the best matches. An empty box shows the normal list again.
+// favorites, or the talk list) and shows the best matches. An empty box shows the normal list again.
 async function applySearch() {
   const token = ++searchToken;
   const q = $('#search-input').value;
@@ -157,7 +175,7 @@ async function applySearch() {
     search.clear();
   } else {
     try {
-      const pool = state.view === 'favorites' ? state.favTracks : await ensureLibTracks();
+      const pool = isMarked(state.view) ? markedTracks(state.view) : await ensureLibTracks();
       if (token !== searchToken) return; // a newer keystroke took over
       search.run(pool, q);
     } catch (err) {
@@ -180,12 +198,15 @@ function renderHeader() {
   const v = state.view;
   let title = { player: 'Now Playing', upload: 'Upload music' }[v] || '';
   let crumbs = '';
-  if (search.active && (v === 'favorites' || v === 'library')) {
-    title = v === 'favorites' ? 'Search favorites' : 'Search';
+  if (search.active && (isMarked(v) || v === 'library')) {
+    title = { favorites: 'Search favorites', talk: 'Search talk' }[v] || 'Search';
     crumbs = `${search.hits.length} match${search.hits.length === 1 ? '' : 'es'}`;
   } else if (v === 'favorites') {
     title = 'Favorites';
     crumbs = `${state.favTracks.length} favorite${state.favTracks.length === 1 ? '' : 's'}`;
+  } else if (v === 'talk') {
+    title = 'Talk';
+    crumbs = `${state.talkTracks.length} talk track${state.talkTracks.length === 1 ? '' : 's'}`;
   } else if (v === 'library') {
     title = state.dir ? state.dir.split('/').pop() : 'Library';
     crumbs = state.dir ? `/${state.dir}` : '';
@@ -193,7 +214,7 @@ function renderHeader() {
   $('#title').textContent = title;
   $('#crumbs').textContent = crumbs;
   $('#btn-back').hidden = v !== 'library' || state.parent === null || search.active;
-  $('#btn-locate').hidden = v !== 'library' && v !== 'favorites';
+  $('#btn-locate').hidden = v !== 'library' && !isMarked(v);
   $('#empty').hidden = true;
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
 }
@@ -205,10 +226,10 @@ function syncMini() {
   document.body.classList.toggle('has-player', has && state.view !== 'player');
 }
 
-// Switches the main area: the player (home), the library, favorites or upload.
+// Switches the main area: the player (home), the library, favorites, talk or upload.
 async function showView(view) {
   state.view = view;
-  const isList = view === 'library' || view === 'favorites';
+  const isList = view === 'library' || isMarked(view);
   if (isList) state.source = view;
   $('#list').hidden = !isList;
   $('#searchbar').hidden = !isList;
@@ -222,15 +243,15 @@ async function showView(view) {
     if (state.meta) setMarquee($('#fp-title'), state.meta.title); // needs layout, so measure once visible
   } else if (view === 'upload') {
     state.uploadView?.show();
-  } else if (view === 'favorites') {
-    await loadFavorites();
+  } else if (isMarked(view)) {
+    await loadMarked(view);
   } else if (state.libStale || !state.libLoaded) {
     await loadDir(state.dir);
   } else {
     list.setItems(currentItems(), { keepScroll: true });
     updateEmpty();
   }
-  if (isList && search.active) await applySearch(); // the pool differs between library and favorites
+  if (isList && search.active) await applySearch(); // the pool differs between the lists
 }
 
 // Called after an upload: the library on disk changed.
@@ -241,7 +262,7 @@ function libraryChanged() {
 
 async function reloadView() {
   state.libTracks = null;
-  if (state.view === 'favorites') await loadFavorites();
+  if (isMarked(state.view)) await loadMarked(state.view);
   else if (state.view === 'library') await loadDir(state.dir, { keepScroll: true });
   else state.libStale = true;
 }
@@ -256,7 +277,7 @@ async function ensureLibTracks() {
 async function playEntry(e) {
   try {
     // Playing from search results queues the results, in ranked order.
-    const tracks = search.active ? search.items() : state.source === 'favorites' ? state.favTracks : await ensureLibTracks();
+    const tracks = search.active ? search.items() : isMarked(state.source) ? markedTracks(state.source) : await ensureLibTracks();
     let idx = tracks.findIndex((t) => t.path === e.path);
     if (idx < 0 && state.source === 'library' && !search.active) {
       state.libTracks = null;
@@ -369,23 +390,25 @@ player.addEventListener('state', () => {
 });
 player.addEventListener('time', renderTime);
 
-// ------------------------------------------------------------------ favorites & delete
+// ------------------------------------------------------------------ favorites, talk & delete
 
-function setFavLocal(path, on) {
-  for (const arr of [state.entries, state.favTracks, state.libTracks || []]) {
-    for (const e of arr) if (e.path === path) e.fav = on;
+// Sets the fav or talk flag of a track everywhere it is held.
+function setMarkLocal(kind, path, on) {
+  for (const arr of [state.entries, state.favTracks, state.talkTracks, state.libTracks || []]) {
+    for (const e of arr) if (e.path === path) e[kind] = on;
   }
-  if (state.meta?.path === path) state.meta.fav = on;
+  if (state.meta?.path === path) state.meta[kind] = on;
 }
 
-async function toggleFav(e) {
-  const on = !e.fav;
-  setFavLocal(e.path, on);
-  renderFavButton();
-  if (state.source === 'favorites' && !on) {
-    state.favTracks = state.favTracks.filter((t) => t.path !== e.path);
+// Toggles a track's favorite (kind 'fav') or talk (kind 'talk') mark.
+async function toggleMark(kind, e) {
+  const m = MARKS[kind];
+  const on = !e[kind];
+  setMarkLocal(kind, e.path, on);
+  renderMarkButtons();
+  if (state.source === m.view && !on) {
+    state[m.tracks] = state[m.tracks].filter((t) => t.path !== e.path);
     search.remove(e.path);
-  if (e.isDir) state.libTracks = null;
     renderHeader();
     list.setItems(currentItems(), { keepScroll: true });
     updateEmpty();
@@ -393,12 +416,12 @@ async function toggleFav(e) {
     list.refresh();
   }
   try {
-    await api.setFavorite(e.path, on);
+    await m.set(e.path, on);
   } catch (err) {
-    setFavLocal(e.path, !on);
+    setMarkLocal(kind, e.path, !on);
     toast(err.message);
     list.refresh();
-    renderFavButton();
+    renderMarkButtons();
   }
 }
 
@@ -449,8 +472,11 @@ async function mergeFolder(e, name) {
 
 async function deleteTrack(e) {
   if (e.isDir && !(await ask({ title: `Delete "${e.name}"?`, message: 'The folder and everything in it will be deleted.', ok: 'Delete', danger: true }))) return;
-  // A favorite is worth a second look; everything else goes straight away (Undo is in the toast).
-  if (!e.isDir && e.fav && !(await ask({ title: `Delete "${e.title ?? stem(e.name)}"?`, message: 'This track is a favorite.', ok: 'Delete', danger: true }))) return;
+  // A favorite or talk track is worth a second look; everything else goes straight away (Undo is in the toast).
+  if (!e.isDir && (e.fav || e.talk)) {
+    const what = [e.fav && 'a favorite', e.talk && 'a talk track'].filter(Boolean).join(' and ');
+    if (!(await ask({ title: `Delete "${e.title ?? stem(e.name)}"?`, message: `This track is ${what}.`, ok: 'Delete', danger: true }))) return;
+  }
   const wasPlaying = player.playing;
   let res;
   try {
@@ -462,6 +488,7 @@ async function deleteTrack(e) {
   const drop = (arr) => arr.filter((t) => !inside(t));
   state.entries = drop(state.entries);
   state.favTracks = drop(state.favTracks);
+  state.talkTracks = drop(state.talkTracks);
   if (state.libTracks) state.libTracks = drop(state.libTracks);
   search.remove(e.path);
   list.setItems(currentItems(), { keepScroll: true });
@@ -499,7 +526,7 @@ function showNowPlaying(meta) {
   const has = !!meta;
   $('#view-player').classList.toggle('is-empty', !has);
   $('#np-empty').hidden = has;
-  for (const id of ['#fp-play', '#fp-prev', '#fp-next', '#fp-fav', '#fp-del', '#fp-seek']) $(id).disabled = !has;
+  for (const id of ['#fp-play', '#fp-prev', '#fp-next', '#fp-fav', '#fp-talk', '#fp-del', '#fp-seek']) $(id).disabled = !has;
   if (!has) {
     $('#fp-art').src = '/generic.svg';
     const title = $('#fp-title');
@@ -523,7 +550,7 @@ function showNowPlaying(meta) {
   setMarquee($('#fp-title'), meta.title);
   $('#fp-artist').textContent = sub || kindLabel(meta.kind, meta.path, '');
   renderPlays();
-  renderFavButton();
+  renderMarkButtons();
   renderLoopBadge();
   document.title = `${meta.title} – Master Music Player`;
   updateMediaSession(meta);
@@ -551,12 +578,16 @@ function renderLoopBadge() {
   b.hidden = false;
 }
 
-function renderFavButton() {
-  const on = !!state.meta?.fav;
-  const b = $('#fp-fav');
-  b.classList.toggle('on', on);
-  b.innerHTML = icon(on ? 'heart-fill' : 'heart');
-  b.setAttribute('aria-label', on ? 'Remove from favorites' : 'Add to favorites');
+// The player's heart and microphone buttons.
+function renderMarkButtons() {
+  for (const kind of ['fav', 'talk']) {
+    const m = MARKS[kind];
+    const on = !!state.meta?.[kind];
+    const b = $(`#fp-${kind}`);
+    b.classList.toggle('on', on);
+    b.innerHTML = icon(on ? m.on : m.off);
+    b.setAttribute('aria-label', on ? m.remove : m.add);
+  }
 }
 
 function renderTransport() {
@@ -614,8 +645,8 @@ async function locateCurrent() {
   if (!t) return;
   clearSearch(); // the track must be visible in its own list, not filtered out of it
   await showView(state.source);
-  if (state.source === 'favorites') {
-    const i = state.favTracks.findIndex((x) => x.path === t.path);
+  if (isMarked(state.source)) {
+    const i = markedTracks(state.source).findIndex((x) => x.path === t.path);
     if (i >= 0) list.scrollToIndex(i);
     return;
   }
@@ -673,8 +704,9 @@ bind('#fp-repeat', () => {
   renderTransport();
   toast({ off: 'Repeat off', all: 'Repeat all', one: 'Repeat one' }[state.settings.repeat], { ms: 1200 });
 });
-bind('#fp-fav', () => state.meta && toggleFav({ path: state.meta.path, fav: state.meta.fav }));
-bind('#fp-del', () => state.meta && deleteTrack({ path: state.meta.path, name: state.meta.title, title: state.meta.title, fav: state.meta.fav }));
+bind('#fp-fav', () => state.meta && toggleMark('fav', { path: state.meta.path, fav: state.meta.fav }));
+bind('#fp-talk', () => state.meta && toggleMark('talk', { path: state.meta.path, talk: state.meta.talk }));
+bind('#fp-del', () => state.meta && deleteTrack({ path: state.meta.path, name: state.meta.title, title: state.meta.title, fav: state.meta.fav, talk: state.meta.talk }));
 bind('#btn-back', () => state.parent !== null && loadDir(state.parent));
 document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showView(t.dataset.view)));
 bind('#np-browse', () => showView('library'));
@@ -887,12 +919,15 @@ document.addEventListener('keydown', (e) => {
     case 'f':
       $('#fp-fav').click();
       break;
+    case 't':
+      $('#fp-talk').click();
+      break;
     case 'l':
       locateCurrent();
       break;
     case '/':
-      e.preventDefault(); // jump to the search box, on the library unless you are in favorites
-      showView(state.view === 'favorites' ? 'favorites' : 'library').then(() => $('#search-input').focus());
+      e.preventDefault(); // jump to the search box, on the library unless you are in favorites or talk
+      showView(isMarked(state.view) ? state.view : 'library').then(() => $('#search-input').focus());
       break;
     case 'Escape':
       $('#settings').hidden = true;
@@ -950,11 +985,11 @@ async function restoreResume() {
   try {
     const r = await api.getResume();
     if (!r.path) return;
-    if (r.source === 'favorites') {
-      state.source = 'favorites';
-      await loadFavorites();
+    if (isMarked(r.source)) {
+      state.source = r.source;
+      await loadMarked(r.source);
     }
-    const tracks = r.source === 'favorites' ? state.favTracks : await ensureLibTracks();
+    const tracks = isMarked(r.source) ? markedTracks(r.source) : await ensureLibTracks();
     const idx = tracks.findIndex((t) => t.path === r.path);
     if (idx < 0) return;
     queue.setQueue(tracks, idx);

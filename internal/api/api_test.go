@@ -427,6 +427,39 @@ func TestFavorites(t *testing.T) {
 	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "a.mp3", "on": false}, nil), 200)
 }
 
+func TestTalk(t *testing.T) {
+	e := newEnv(t, false, false)
+	wantStatus(t, e.do("POST", "/api/talk", map[string]any{"path": "a.mp3", "on": true}, nil), 200)
+	wantStatus(t, e.do("POST", "/api/talk", map[string]any{"path": "notes.txt", "on": true}, nil), 415)
+	wantStatus(t, e.do("POST", "/api/talk", map[string]any{"path": "missing.mp3", "on": true}, nil), 404)
+	wantStatus(t, e.do("POST", "/api/talk", "{bad", nil), 400)
+
+	var talk struct {
+		Tracks []entryDTO `json:"tracks"`
+	}
+	decode(t, e.do("GET", "/api/talk", nil, nil), &talk)
+	if len(talk.Tracks) != 1 || talk.Tracks[0].Path != "a.mp3" || !talk.Tracks[0].Talk || talk.Tracks[0].Fav {
+		t.Fatalf("talk list: %+v", talk.Tracks)
+	}
+	var fav struct {
+		Tracks []entryDTO `json:"tracks"`
+	}
+	decode(t, e.do("GET", "/api/favorites", nil, nil), &fav)
+	if len(fav.Tracks) != 0 {
+		t.Fatalf("talk tracks are not favorites: %+v", fav.Tracks)
+	}
+	var m metaResp
+	decode(t, e.do("GET", "/api/meta?p=a.mp3", nil, nil), &m)
+	if !m.Talk || m.Fav {
+		t.Fatalf("meta should flag talk: %+v", m)
+	}
+	wantStatus(t, e.do("POST", "/api/talk", map[string]any{"path": "a.mp3", "on": false}, nil), 200)
+	decode(t, e.do("GET", "/api/talk", nil, nil), &talk)
+	if len(talk.Tracks) != 0 {
+		t.Fatalf("unmarked: %+v", talk.Tracks)
+	}
+}
+
 func TestMeta(t *testing.T) {
 	e := newEnv(t, true, false)
 	var m metaResp
@@ -531,6 +564,7 @@ func TestPathTraversalCannotEscape(t *testing.T) {
 func TestDeleteAndUndo(t *testing.T) {
 	e := newEnv(t, false, false)
 	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "a.mp3", "on": true}, nil), 200)
+	wantStatus(t, e.do("POST", "/api/talk", map[string]any{"path": "a.mp3", "on": true}, nil), 200)
 
 	rec := e.do("DELETE", "/api/track?p=a.mp3", nil, nil)
 	wantStatus(t, rec, 200)
@@ -542,8 +576,8 @@ func TestDeleteAndUndo(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(e.root, "a.mp3")); err == nil {
 		t.Fatal("file should be gone")
 	}
-	if e.srv.Store.IsFavorite("a.mp3") {
-		t.Fatal("deleting must drop the favorite")
+	if e.srv.Store.IsFavorite("a.mp3") || e.srv.Store.IsTalk("a.mp3") {
+		t.Fatal("deleting must drop the favorite and the talk mark")
 	}
 	wantStatus(t, e.do("GET", "/api/meta?p=a.mp3", nil, nil), 404)
 
@@ -552,13 +586,14 @@ func TestDeleteAndUndo(t *testing.T) {
 	var und struct {
 		Path string `json:"path"`
 		Fav  bool   `json:"fav"`
+		Talk bool   `json:"talk"`
 	}
 	decode(t, rec, &und)
-	if und.Path != "a.mp3" || !und.Fav {
+	if und.Path != "a.mp3" || !und.Fav || !und.Talk {
 		t.Fatalf("undo response: %+v", und)
 	}
-	if !e.srv.Store.IsFavorite("a.mp3") {
-		t.Error("undo must restore the favorite")
+	if !e.srv.Store.IsFavorite("a.mp3") || !e.srv.Store.IsTalk("a.mp3") {
+		t.Error("undo must restore the favorite and the talk mark")
 	}
 	wantStatus(t, e.do("GET", "/api/meta?p=a.mp3", nil, nil), 200)
 	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": del["token"]}, nil), 400)
@@ -579,7 +614,7 @@ func TestDeleteErrorsAndUndoBookkeeping(t *testing.T) {
 	var del map[string]string
 	decode(t, rec, &del)
 	now = now.Add(2 * time.Hour)
-	e.srv.rememberUndo("0000000000000000", false, nil)
+	e.srv.rememberUndo("0000000000000000", undoRec{})
 	e.srv.undoMu.Lock()
 	_, kept := e.srv.undo[del["token"]]
 	e.srv.undoMu.Unlock()
@@ -678,11 +713,12 @@ func TestRenameAndDeleteFolder(t *testing.T) {
 	e := newEnv(t, false, false)
 	write(t, filepath.Join(e.root, "dir", "s.mp3"), mp3With("s", nil))
 	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "dir/s.mp3", "on": true}, nil), 200)
+	wantStatus(t, e.do("POST", "/api/talk", map[string]any{"path": "dir/s.mp3", "on": true}, nil), 200)
 
 	rec := e.do("POST", "/api/rename", map[string]string{"path": "dir", "name": "renamed"}, nil)
 	wantStatus(t, rec, 200)
-	if !e.srv.Store.IsFavorite("renamed/s.mp3") || e.srv.Store.IsFavorite("dir/s.mp3") {
-		t.Fatal("favorites must follow a renamed folder")
+	if !e.srv.Store.IsFavorite("renamed/s.mp3") || e.srv.Store.IsFavorite("dir/s.mp3") || !e.srv.Store.IsTalk("renamed/s.mp3") {
+		t.Fatal("favorites and talk marks must follow a renamed folder")
 	}
 	wantStatus(t, e.do("POST", "/api/rename", map[string]string{"path": "renamed", "name": "../x"}, nil), 400)
 	wantStatus(t, e.do("POST", "/api/rename", map[string]string{"path": "missing", "name": "x"}, nil), 404)
@@ -695,12 +731,12 @@ func TestRenameAndDeleteFolder(t *testing.T) {
 	if del["isDir"] != true {
 		t.Fatalf("delete response: %v", del)
 	}
-	if e.srv.Store.IsFavorite("renamed/s.mp3") {
-		t.Fatal("deleting a folder must drop the favorites inside it")
+	if e.srv.Store.IsFavorite("renamed/s.mp3") || e.srv.Store.IsTalk("renamed/s.mp3") {
+		t.Fatal("deleting a folder must drop the favorites and talk marks inside it")
 	}
 	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": del["token"].(string)}, nil), 200)
-	if !e.srv.Store.IsFavorite("renamed/s.mp3") {
-		t.Error("undo must restore favorites inside the folder")
+	if !e.srv.Store.IsFavorite("renamed/s.mp3") || !e.srv.Store.IsTalk("renamed/s.mp3") {
+		t.Error("undo must restore favorites and talk marks inside the folder")
 	}
 	wantStatus(t, e.do("GET", "/api/meta?p=renamed/s.mp3", nil, nil), 200)
 }

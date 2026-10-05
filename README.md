@@ -119,10 +119,10 @@ Settings choose what happens at the end of the intro: **loop N times then fade o
 | Source selector | Library / Favorites tabs |
 | *(new)* | **Fuzzy search** on the Library and Favorites screens (see below) |
 | Konami code | Yes |
-| *(new)* | **Favorites** (heart on every track), keyboard shortcuts, Media Session lock-screen controls, installable PWA |
+| *(new)* | **Favorites** (heart on every track) and a **Talk** list for speech-only files (microphone on every track), keyboard shortcuts, Media Session lock-screen controls, installable PWA |
 
 Keyboard (desktop): `Space` play/pause, `←`/`→` seek 5 s (`Shift` = previous/next), `↑`/`↓`
-volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `L` locate, `/` search, `Esc` close.
+volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `T` talk, `L` locate, `/` search, `Esc` close.
 
 ## Who can connect
 

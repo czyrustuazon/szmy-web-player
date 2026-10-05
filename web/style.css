@@ -6,6 +6,7 @@
   --dim: #98a2b0;
   --accent: #5ab0ff;
   --fav: #ff5a7a;
+  --talk: #f5b942;
   --danger: #ff6b5a;
   --line: #2b333d;
   --viz: #5ab0ff;
@@ -24,6 +25,7 @@
     --text: #151a20;
     --dim: #5b6674;
     --accent: #0a6cd1;
+    --talk: #a8670a;
     --line: #d5dbe3;
     --viz: #0a6cd1;
   }
@@ -77,6 +79,7 @@ a.btn { display: grid; place-items: center; text-decoration: none; }
 .ib:active { background: var(--panel2); }
 .ib.on { color: var(--accent); }
 .ib.fav.on { color: var(--fav); }
+.ib.talk.on { color: var(--talk); }
 .ib.del:active { color: var(--danger); }
 .ib.big .ic { width: 32px; height: 32px; }
 .spin .ic { animation: spin 1s linear infinite; }

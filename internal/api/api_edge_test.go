@@ -42,6 +42,7 @@ func TestReadOnlyLibraryDisablesWrites(t *testing.T) {
 func TestStoreWriteFailuresAreSurfaced(t *testing.T) {
 	e := newEnv(t, false, false)
 	wantStatus(t, e.do("POST", "/api/favorite", map[string]any{"path": "a.mp3", "on": true}, nil), 200)
+	wantStatus(t, e.do("POST", "/api/talk", map[string]any{"path": "a.mp3", "on": true}, nil), 200)
 
 	// A directory squatting on the store's temp file name makes every later save fail.
 	if err := os.Mkdir(filepath.Join(e.data, "state.json.tmp"), 0o755); err != nil {

@@ -58,9 +58,11 @@ type Deps struct {
 }
 
 type undoRec struct {
-	wasFav bool
-	favs   []string // favorites inside a deleted folder
-	at     time.Time
+	wasFav  bool
+	favs    []string // favorites inside a deleted folder
+	wasTalk bool
+	talk    []string // talk tracks inside a deleted folder
+	at      time.Time
 }
 
 // Server serves the API and the web app.
@@ -102,6 +104,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tracks", s.protect(s.tracks))
 	mux.HandleFunc("GET /api/favorites", s.protect(s.favorites))
 	mux.HandleFunc("POST /api/favorite", s.protect(s.setFavorite))
+	mux.HandleFunc("GET /api/talk", s.protect(s.talk))
+	mux.HandleFunc("POST /api/talk", s.protect(s.setTalk))
 	mux.HandleFunc("GET /api/meta", s.protect(s.meta))
 	mux.HandleFunc("POST /api/played", s.protect(s.played))
 	mux.HandleFunc("GET /api/art", s.protect(s.art))
@@ -252,17 +256,21 @@ func (s *Server) fail(w http.ResponseWriter, err error, site, p string) {
 
 type entryDTO struct {
 	library.Entry
-	Fav bool `json:"fav"`
+	Fav  bool `json:"fav"`
+	Talk bool `json:"talk"`
 }
 
 func (s *Server) dtos(es []library.Entry) []entryDTO {
-	favs := map[string]bool{}
+	favs, talk := map[string]bool{}, map[string]bool{}
 	for _, f := range s.Store.Favorites() {
 		favs[f.Path] = true
 	}
+	for _, f := range s.Store.Talk() {
+		talk[f.Path] = true
+	}
 	out := make([]entryDTO, 0, len(es))
 	for _, e := range es {
-		out = append(out, entryDTO{Entry: e, Fav: favs[e.Path]})
+		out = append(out, entryDTO{Entry: e, Fav: favs[e.Path], Talk: talk[e.Path]})
 	}
 	return out
 }
@@ -426,8 +434,26 @@ func (s *Server) tracks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) favorites(w http.ResponseWriter, r *http.Request) {
+	s.markedTracks(w, s.Store.Favorites())
+}
+
+func (s *Server) setFavorite(w http.ResponseWriter, r *http.Request) {
+	s.setMark(w, r, "favorite", s.Store.SetFavorite)
+}
+
+// talk lists the tracks marked as talk (speech only, no music).
+func (s *Server) talk(w http.ResponseWriter, r *http.Request) {
+	s.markedTracks(w, s.Store.Talk())
+}
+
+func (s *Server) setTalk(w http.ResponseWriter, r *http.Request) {
+	s.setMark(w, r, "talk", s.Store.SetTalk)
+}
+
+// markedTracks writes the marked tracks that still exist and play.
+func (s *Server) markedTracks(w http.ResponseWriter, marked []store.Favorite) {
 	var es []library.Entry
-	for _, f := range s.Store.Favorites() {
+	for _, f := range marked {
 		if e, err := s.Lib.Describe(f.Path); err == nil && e.Playable {
 			es = append(es, e)
 		}
@@ -435,7 +461,8 @@ func (s *Server) favorites(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tracks": s.dtos(es)})
 }
 
-func (s *Server) setFavorite(w http.ResponseWriter, r *http.Request) {
+// setMark marks or unmarks one track (as a favorite, or as talk); only playable tracks can be marked.
+func (s *Server) setMark(w http.ResponseWriter, r *http.Request, site string, set func(string, bool) error) {
 	var body struct {
 		Path string `json:"path"`
 		On   bool   `json:"on"`
@@ -447,16 +474,16 @@ func (s *Server) setFavorite(w http.ResponseWriter, r *http.Request) {
 	if body.On {
 		e, err := s.Lib.Describe(p)
 		if err != nil {
-			s.fail(w, err, "favorite", p)
+			s.fail(w, err, site, p)
 			return
 		}
 		if !e.Playable {
-			s.fail(w, library.ErrNotAudio, "favorite", p)
+			s.fail(w, library.ErrNotAudio, site, p)
 			return
 		}
 	}
-	if err := s.Store.SetFavorite(p, body.On); err != nil {
-		s.fail(w, err, "favorite", p)
+	if err := set(p, body.On); err != nil {
+		s.fail(w, err, site, p)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": p, "on": body.On})
@@ -476,6 +503,7 @@ type metaResp struct {
 	SampleRate int        `json:"sampleRate"`
 	Loop       *meta.Loop `json:"loop"`
 	Fav        bool       `json:"fav"`
+	Talk       bool       `json:"talk"`
 	Plays      int        `json:"plays"`
 }
 
@@ -517,7 +545,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		Title: tags.Title, Artist: tags.Artist, Album: tags.Album, Genre: tags.Genre,
 		Year: tags.Year, Track: tags.Track, HasArt: len(tags.Art) > 0,
 		SampleRate: tags.SampleRate, Loop: tags.Loop, Fav: s.Store.IsFavorite(clean),
-		Plays: s.Store.Plays(clean),
+		Talk: s.Store.IsTalk(clean), Plays: s.Store.Plays(clean),
 	}
 	if !resp.HasArt {
 		_, resp.HasArt = s.Lib.FolderArt(clean)
@@ -674,22 +702,28 @@ func (s *Server) prefetch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteTrack(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query().Get("p")
 	clean := library.CleanRel(p)
-	wasFav := s.Store.IsFavorite(clean)
-	favs := s.Store.FavoritesUnder(clean)
+	rec := undoRec{
+		wasFav: s.Store.IsFavorite(clean), favs: s.Store.FavoritesUnder(clean),
+		wasTalk: s.Store.IsTalk(clean), talk: s.Store.TalkUnder(clean),
+	}
 	tr, err := s.Lib.Delete(p)
 	if err != nil {
 		s.fail(w, err, "delete", clean)
 		return
 	}
-	if err := s.Store.SetFavorite(clean, false); err != nil {
-		s.Log.Append(errlog.CodeIO, "delete", clean, err.Error())
-	}
-	if tr.IsDir {
-		if err := s.Store.MoveFavorites(clean, ""); err != nil {
+	for _, unmark := range []func(string, bool) error{s.Store.SetFavorite, s.Store.SetTalk} {
+		if err := unmark(clean, false); err != nil {
 			s.Log.Append(errlog.CodeIO, "delete", clean, err.Error())
 		}
 	}
-	s.rememberUndo(tr.Token, wasFav, favs)
+	if tr.IsDir {
+		for _, drop := range []func(string, string) error{s.Store.MoveFavorites, s.Store.MoveTalk} {
+			if err := drop(clean, ""); err != nil {
+				s.Log.Append(errlog.CodeIO, "delete", clean, err.Error())
+			}
+		}
+	}
+	s.rememberUndo(tr.Token, rec)
 	out := map[string]any{"token": tr.Token, "name": tr.Name, "path": tr.Path}
 	if tr.IsDir {
 		out["isDir"] = true
@@ -697,7 +731,7 @@ func (s *Server) deleteTrack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// renameFolder renames a folder in place; favorites inside it follow.
+// renameFolder renames a folder in place; favorites and talk marks inside it follow.
 func (s *Server) renameFolder(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
@@ -712,11 +746,10 @@ func (s *Server) renameFolder(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "rename", clean)
 		return
 	}
-	if err := s.Store.MoveFavorites(clean, dest); err != nil {
-		s.Log.Append(errlog.CodeIO, "rename", clean, err.Error())
-	}
-	if err := s.Store.MovePlays(clean, dest); err != nil {
-		s.Log.Append(errlog.CodeIO, "rename", clean, err.Error())
+	for _, move := range []func(string, string) error{s.Store.MoveFavorites, s.Store.MoveTalk, s.Store.MovePlays} {
+		if err := move(clean, dest); err != nil {
+			s.Log.Append(errlog.CodeIO, "rename", clean, err.Error())
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": dest, "name": body.Name})
 }
@@ -747,7 +780,7 @@ func (s *Server) mergeFolder(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) rememberUndo(token string, wasFav bool, favs []string) {
+func (s *Server) rememberUndo(token string, rec undoRec) {
 	s.undoMu.Lock()
 	defer s.undoMu.Unlock()
 	now := s.now()
@@ -756,7 +789,8 @@ func (s *Server) rememberUndo(token string, wasFav bool, favs []string) {
 			delete(s.undo, t)
 		}
 	}
-	s.undo[token] = undoRec{wasFav: wasFav, favs: favs, at: now}
+	rec.at = now
+	s.undo[token] = rec
 }
 
 func (s *Server) undoDelete(w http.ResponseWriter, r *http.Request) {
@@ -775,17 +809,24 @@ func (s *Server) undoDelete(w http.ResponseWriter, r *http.Request) {
 	rec := s.undo[body.Token]
 	delete(s.undo, body.Token)
 	s.undoMu.Unlock()
+	favs, talk := rec.favs, rec.talk
 	if rec.wasFav {
-		if err := s.Store.SetFavorite(p, true); err != nil {
-			s.Log.Append(errlog.CodeIO, "undo", p, err.Error())
-		}
+		favs = append(favs, p)
 	}
-	for _, f := range rec.favs {
+	if rec.wasTalk {
+		talk = append(talk, p)
+	}
+	for _, f := range favs {
 		if err := s.Store.SetFavorite(f, true); err != nil {
 			s.Log.Append(errlog.CodeIO, "undo", f, err.Error())
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": p, "fav": rec.wasFav})
+	for _, f := range talk {
+		if err := s.Store.SetTalk(f, true); err != nil {
+			s.Log.Append(errlog.CodeIO, "undo", f, err.Error())
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": p, "fav": rec.wasFav, "talk": rec.wasTalk})
 }
 
 // ---------------------------------------------------------------- settings / resume / log

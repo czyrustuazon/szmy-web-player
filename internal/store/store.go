@@ -1,4 +1,4 @@
-// Package store persists favorites, settings, resume position and the
+// Package store persists favorites, talk tracks, settings, resume position and the
 // password hash in one JSON file, written atomically.
 package store
 
@@ -77,20 +77,94 @@ func (s Settings) Normalize() Settings {
 type Resume struct {
 	Path     string  `json:"path"`
 	Position float64 `json:"position"`
-	Source   string  `json:"source"` // library | favorites
+	Source   string  `json:"source"` // library | favorites | talk
 }
 
-// Favorite is a favorited track.
+// Favorite is a marked track: a favorite, or a talk track.
 type Favorite struct {
 	Path  string `json:"path"`
 	Added int64  `json:"added"`
 }
 
+// marks maps the paths of marked tracks (favorites, or talk tracks) to when they were marked.
+type marks map[string]int64
+
+// list returns the marks newest first.
+func (m marks) list() []Favorite {
+	out := make([]Favorite, 0, len(m))
+	for p, t := range m {
+		out = append(out, Favorite{Path: p, Added: t})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Added != out[j].Added {
+			return out[i].Added > out[j].Added
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
+// set marks or unmarks path and reports whether anything changed.
+func (m marks) set(path string, on bool, now time.Time) bool {
+	_, had := m[path]
+	switch {
+	case on && !had:
+		m[path] = now.UnixNano()
+	case !on && had:
+		delete(m, path)
+	default:
+		return false
+	}
+	return true
+}
+
+// under lists the marked paths inside dir (at any depth).
+func (m marks) under(dir string) []string {
+	var out []string
+	for p := range m {
+		if strings.HasPrefix(p, dir+"/") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// move re-roots the marks inside folder from to folder to (dropping them when to == "") and
+// reports whether anything changed.
+func (m marks) move(from, to string) bool {
+	changed := false
+	for p, t := range m {
+		if !strings.HasPrefix(p, from+"/") {
+			continue
+		}
+		delete(m, p)
+		if to != "" {
+			m[to+p[len(from):]] = t
+		}
+		changed = true
+	}
+	return changed
+}
+
+// remap moves the mark on from to to, unless to is marked already.
+func (m marks) remap(from, to string) bool {
+	t, ok := m[from]
+	if !ok {
+		return false
+	}
+	delete(m, from)
+	if _, exists := m[to]; !exists {
+		m[to] = t
+	}
+	return true
+}
+
 type state struct {
-	Favorites map[string]int64 `json:"favorites"`
-	Settings  Settings         `json:"settings"`
-	Resume    Resume           `json:"resume"`
-	Plays     map[string]int   `json:"plays,omitempty"`
+	Favorites marks          `json:"favorites"`
+	Talk      marks          `json:"talk,omitempty"`
+	Settings  Settings       `json:"settings"`
+	Resume    Resume         `json:"resume"`
+	Plays     map[string]int `json:"plays,omitempty"`
 }
 
 // Store is safe for concurrent use.
@@ -104,7 +178,7 @@ type Store struct {
 // Open loads path; a missing file starts empty.
 func Open(path string) (*Store, error) {
 	s := &Store{path: path, now: time.Now}
-	s.st = state{Favorites: map[string]int64{}, Settings: DefaultSettings()}
+	s.st = state{Favorites: marks{}, Talk: marks{}, Settings: DefaultSettings()}
 	data, err := os.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
@@ -116,7 +190,10 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	if s.st.Favorites == nil {
-		s.st.Favorites = map[string]int64{}
+		s.st.Favorites = marks{}
+	}
+	if s.st.Talk == nil {
+		s.st.Talk = marks{}
 	}
 	if s.st.Plays == nil {
 		s.st.Plays = map[string]int{}
@@ -183,17 +260,7 @@ func (s *Store) save() error {
 func (s *Store) Favorites() []Favorite {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]Favorite, 0, len(s.st.Favorites))
-	for p, t := range s.st.Favorites {
-		out = append(out, Favorite{Path: p, Added: t})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Added != out[j].Added {
-			return out[i].Added > out[j].Added
-		}
-		return out[i].Path < out[j].Path
-	})
-	return out
+	return s.st.Favorites.list()
 }
 
 // IsFavorite reports whether path is favorited.
@@ -208,13 +275,7 @@ func (s *Store) IsFavorite(path string) bool {
 func (s *Store) SetFavorite(path string, on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, had := s.st.Favorites[path]
-	switch {
-	case on && !had:
-		s.st.Favorites[path] = s.now().UnixNano()
-	case !on && had:
-		delete(s.st.Favorites, path)
-	default:
+	if !s.st.Favorites.set(path, on, s.now()) {
 		return nil
 	}
 	return s.save()
@@ -224,13 +285,7 @@ func (s *Store) SetFavorite(path string, on bool) error {
 func (s *Store) FavoritesUnder(dir string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []string
-	for p := range s.st.Favorites {
-		if strings.HasPrefix(p, dir+"/") {
-			out = append(out, p)
-		}
-	}
-	return out
+	return s.st.Favorites.under(dir)
 }
 
 // MoveFavorites re-roots favorites from folder from to folder to, keeping
@@ -238,36 +293,67 @@ func (s *Store) FavoritesUnder(dir string) []string {
 func (s *Store) MoveFavorites(from, to string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	changed := false
-	for p, t := range s.st.Favorites {
-		if !strings.HasPrefix(p, from+"/") {
-			continue
-		}
-		delete(s.st.Favorites, p)
-		if to != "" {
-			s.st.Favorites[to+p[len(from):]] = t
-		}
-		changed = true
-	}
-	if !changed {
+	if !s.st.Favorites.move(from, to) {
 		return nil
 	}
 	return s.save()
 }
 
-// Remap moves favorites and play counts from the old path of each file to its new one (after a
-// folder merge). A favorite lands on the new path unless that path is a favorite already; play
-// counts add up.
+// Talk lists the talk tracks (speech only, no music), newest first.
+func (s *Store) Talk() []Favorite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.Talk.list()
+}
+
+// IsTalk reports whether path is marked as a talk track.
+func (s *Store) IsTalk(path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.st.Talk[path]
+	return ok
+}
+
+// SetTalk marks or unmarks a talk track.
+func (s *Store) SetTalk(path string, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.st.Talk.set(path, on, s.now()) {
+		return nil
+	}
+	return s.save()
+}
+
+// TalkUnder lists the talk tracks inside dir (at any depth).
+func (s *Store) TalkUnder(dir string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.Talk.under(dir)
+}
+
+// MoveTalk re-roots talk tracks from folder from to folder to, keeping
+// their added times. With to == "" they are dropped.
+func (s *Store) MoveTalk(from, to string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.st.Talk.move(from, to) {
+		return nil
+	}
+	return s.save()
+}
+
+// Remap moves favorites, talk marks and play counts from the old path of each file to its new
+// one (after a folder merge). A mark lands on the new path unless that path has it already;
+// play counts add up.
 func (s *Store) Remap(moves map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	changed := false
 	for from, to := range moves {
-		if t, ok := s.st.Favorites[from]; ok {
-			delete(s.st.Favorites, from)
-			if _, exists := s.st.Favorites[to]; !exists {
-				s.st.Favorites[to] = t
-			}
+		if s.st.Favorites.remap(from, to) {
+			changed = true
+		}
+		if s.st.Talk.remap(from, to) {
 			changed = true
 		}
 		if n, ok := s.st.Plays[from]; ok {
@@ -309,7 +395,7 @@ func (s *Store) SetResume(r Resume) error {
 	if r.Position < 0 || math.IsNaN(r.Position) {
 		r.Position = 0
 	}
-	if r.Source != "favorites" {
+	if r.Source != "favorites" && r.Source != "talk" {
 		r.Source = "library"
 	}
 	s.mu.Lock()

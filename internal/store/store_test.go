@@ -308,3 +308,71 @@ func TestRemapFollowsMovedFilesAndMergesDuplicates(t *testing.T) {
 		t.Error("a failed save is reported")
 	}
 }
+
+// Talk tracks are a second list beside the favorites, kept the same way.
+func TestTalkMarks(t *testing.T) {
+	s, p := open(t)
+	base := time.Unix(1000, 0)
+	tick := 0
+	s.now = func() time.Time { tick++; return base.Add(time.Duration(tick) * time.Second) }
+	for _, f := range []string{"pod/a.mp3", "pod/deep/b.mp3", "other/c.mp3"} {
+		if err := s.SetTalk(f, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetTalk("other/c.mp3", true); err != nil { // already talk: no change
+		t.Fatal(err)
+	}
+	if got := s.Talk(); len(got) != 3 || got[0].Path != "other/c.mp3" {
+		t.Fatalf("newest first expected: %+v", got)
+	}
+	if s.IsFavorite("other/c.mp3") || len(s.Favorites()) != 0 {
+		t.Fatal("talk and favorites are separate lists")
+	}
+	if got := s.TalkUnder("pod"); len(got) != 2 {
+		t.Fatalf("TalkUnder: %v", got)
+	}
+	if err := s.MoveTalk("nothing", "x"); err != nil { // no match: no save
+		t.Fatal(err)
+	}
+	if err := s.MoveTalk("pod", "cast"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsTalk("cast/a.mp3") || !s.IsTalk("cast/deep/b.mp3") || s.IsTalk("pod/a.mp3") {
+		t.Fatalf("talk did not follow the rename: %+v", s.Talk())
+	}
+	if err := s.MoveTalk("cast", ""); err != nil { // to == "": dropped
+		t.Fatal(err)
+	}
+	if err := s.Remap(map[string]string{"other/c.mp3": "x/c.mp3"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTalk("x/c.mp3", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTalk("x/c.mp3", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetResume(Resume{Path: "x/c.mp3", Source: "talk"}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.Talk(); len(got) != 1 || got[0].Path != "x/c.mp3" || again.Resume().Source != "talk" {
+		t.Fatalf("talk persisted: %+v %+v", got, again.Resume())
+	}
+}
+
+func TestOpenAcceptsNullTalk(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	_ = os.WriteFile(p, []byte(`{"talk": null}`), 0o644)
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTalk("a", true); err != nil {
+		t.Fatalf("nil talk map must be usable: %v", err)
+	}
+}
