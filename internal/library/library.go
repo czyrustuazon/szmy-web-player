@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"masterplayer/internal/sniff"
@@ -367,8 +368,13 @@ func (l *Library) Delete(rel string) (Trashed, error) {
 		return Trashed{}, err
 	}
 	if err := move(abs, filepath.Join(dir, "f"), st.IsDir()); err != nil {
-		os.RemoveAll(dir)
-		return Trashed{}, err
+		if st.IsDir() && errors.Is(err, syscall.EXDEV) {
+			err = l.trashNearby(abs, clean, dir, err)
+		}
+		if err != nil {
+			os.RemoveAll(dir)
+			return Trashed{}, err
+		}
 	}
 	return Trashed{Token: token, Path: clean, Name: filepath.Base(abs), IsDir: st.IsDir()}, nil
 }
@@ -380,6 +386,58 @@ func move(src, dst string, isDir bool) error {
 		return renameFile(src, dst)
 	}
 	return MoveFile(src, dst)
+}
+
+// trashNearby trashes a folder that sits on another file system than the trash
+// (a separate mount inside the library, such as an uploads folder), since folders
+// are not copied. It tries "<ancestor>/.trash/<token>" from the top of the
+// library down until a rename succeeds, and notes that ancestor in the entry's
+// "at" file so Undo and PurgeTrash can find the folder. It returns err when no
+// ancestor works.
+func (l *Library) trashNearby(abs, clean, dir string, err error) error {
+	parts := strings.Split(clean, "/")
+	for i := 1; i < len(parts); i++ {
+		at := strings.Join(parts[:i], "/")
+		near := l.nearTrash(at, filepath.Base(dir))
+		if werr := os.WriteFile(filepath.Join(dir, "at"), []byte(at), 0o644); werr != nil {
+			return werr
+		}
+		if merr := os.MkdirAll(near, 0o755); merr != nil {
+			return merr
+		}
+		if err = renameFile(abs, filepath.Join(near, "f")); err == nil {
+			return nil
+		}
+		removeNear(near)
+	}
+	return err
+}
+
+// nearTrash is the trash folder for token inside the library folder at.
+func (l *Library) nearTrash(at, token string) string {
+	return filepath.Join(l.root, filepath.FromSlash(at), ".trash", token)
+}
+
+// removeNear deletes a nearby trash entry, and its .trash folder once empty.
+func removeNear(near string) {
+	os.RemoveAll(near)
+	os.Remove(filepath.Dir(near))
+}
+
+// trashed is where the trash entry in dir keeps its file or folder.
+func (l *Library) trashed(dir string) string {
+	if at, err := os.ReadFile(filepath.Join(dir, "at")); err == nil {
+		return filepath.Join(l.nearTrash(string(at), filepath.Base(dir)), "f")
+	}
+	return filepath.Join(dir, "f")
+}
+
+// removeTrash deletes the trash entry in dir, including a folder trashed nearby.
+func (l *Library) removeTrash(dir string) error {
+	if f := l.trashed(dir); filepath.Dir(f) != dir {
+		removeNear(filepath.Dir(f))
+	}
+	return os.RemoveAll(dir)
 }
 
 // Rename gives the folder at rel a new name within the same parent and returns
@@ -448,14 +506,15 @@ func (l *Library) Undo(token string) (string, error) {
 		return "", ErrExists
 	}
 	_ = os.MkdirAll(filepath.Dir(dest), 0o755) // if this fails, the move below reports why
-	st, err := os.Lstat(filepath.Join(dir, "f"))
+	src := l.trashed(dir)
+	st, err := os.Lstat(src)
 	if err != nil {
 		return "", err
 	}
-	if err := move(filepath.Join(dir, "f"), dest, st.IsDir()); err != nil {
+	if err := move(src, dest, st.IsDir()); err != nil {
 		return "", err
 	}
-	os.RemoveAll(dir)
+	l.removeTrash(dir)
 	return CleanRel(string(orig)), nil
 }
 
@@ -475,7 +534,7 @@ func (l *Library) PurgeTrash(maxAge time.Duration) (int, error) {
 		if err != nil || !info.IsDir() || !info.ModTime().Before(cutoff) {
 			continue
 		}
-		if os.RemoveAll(filepath.Join(l.trashDir, de.Name())) == nil {
+		if l.removeTrash(filepath.Join(l.trashDir, de.Name())) == nil {
 			n++
 		}
 	}
