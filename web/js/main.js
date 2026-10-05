@@ -439,6 +439,8 @@ async function mergeFolder(e, name) {
 
 async function deleteTrack(e) {
   if (e.isDir && !confirm(`Delete folder "${e.name}" and everything in it?`)) return;
+  // A favorite is worth a second look; everything else goes straight away (Undo is in the toast).
+  if (!e.isDir && e.fav && !confirm(`"${e.title ?? stem(e.name)}" is a favorite. Delete it anyway?`)) return;
   const wasPlaying = player.playing;
   let res;
   try {
@@ -662,7 +664,7 @@ bind('#fp-repeat', () => {
   toast({ off: 'Repeat off', all: 'Repeat all', one: 'Repeat one' }[state.settings.repeat], { ms: 1200 });
 });
 bind('#fp-fav', () => state.meta && toggleFav({ path: state.meta.path, fav: state.meta.fav }));
-bind('#fp-del', () => state.meta && deleteTrack({ path: state.meta.path, name: state.meta.title }));
+bind('#fp-del', () => state.meta && deleteTrack({ path: state.meta.path, name: state.meta.title, title: state.meta.title, fav: state.meta.fav }));
 bind('#btn-back', () => state.parent !== null && loadDir(state.parent));
 document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showView(t.dataset.view)));
 bind('#np-browse', () => showView('library'));
