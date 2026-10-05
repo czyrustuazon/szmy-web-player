@@ -2,7 +2,8 @@
 // anime-db-stream: only your own devices, on your Tailscale network or at home.
 //
 // Two layers, both checked against the address the connection actually came from (never
-// against headers such as X-Forwarded-For, which anyone can forge):
+// against headers such as X-Forwarded-For, which anyone can forge; see TrustProxies for the
+// one exception, a tunnel or reverse proxy running on your own machine or network):
 //
 //  1. A network allowlist (MP_ALLOWED_NETS). The default, "tailscale,lan", allows Tailscale
 //     addresses (100.64.0.0/10) and the private ranges of a home network, and refuses
@@ -105,6 +106,11 @@ type Policy struct {
 	now     func() time.Time
 	logf    func(format string, args ...any)
 
+	// Set by TrustProxies: connections from proxies carry the visitor's address in a header,
+	// and that address must be in visitors.
+	proxies  []netip.Prefix
+	visitors []netip.Prefix
+
 	mu      sync.Mutex
 	names   map[netip.Addr]cached
 	lastLog map[netip.Addr]time.Time
@@ -134,7 +140,66 @@ func (p *Policy) Describe() string {
 	if len(p.devices) > 0 {
 		s += fmt.Sprintf("; Tailscale peers must be one of %d known device(s)", len(p.devices))
 	}
+	if len(p.proxies) > 0 {
+		s += fmt.Sprintf("; visitors through a proxy or tunnel are checked by their own address against %d range(s)", len(p.visitors))
+	}
 	return s
+}
+
+// TrustProxies makes the policy proxy-aware. Behind a tunnel such as cloudflared every visitor
+// arrives from the tunnel's own (local) address, so the network check alone would wave the
+// whole internet through. A request that comes from one of proxies and carries a forwarding
+// header is judged instead by the visitor address in that header, which must be in visitors.
+// Headers from any other address are ignored, as before: only a proxy you run can vouch for a
+// visitor. Call it before serving; with no proxies, forwarding headers are never read.
+func (p *Policy) TrustProxies(proxies, visitors []netip.Prefix) {
+	p.proxies = append([]netip.Prefix{}, proxies...)
+	p.visitors = append([]netip.Prefix{}, visitors...)
+}
+
+// forwardHeaders are the headers a proxy uses to pass on the visitor's address.
+var forwardHeaders = []string{"Cf-Connecting-Ip", "X-Forwarded-For", "X-Real-Ip", "Forwarded"}
+
+// Forwarded reports whether a request says it came through a proxy or tunnel. It is only a
+// claim (anyone can send these headers), so use it to refuse, never to allow.
+func Forwarded(h http.Header) bool {
+	for _, k := range forwardHeaders {
+		if h.Get(k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// visitor reads the visitor's address that a trusted proxy passed on: Cloudflare's
+// CF-Connecting-IP, else the last X-Forwarded-For entry (the one the nearest proxy added),
+// else X-Real-IP.
+func visitor(h http.Header) (netip.Addr, bool) {
+	if v := strings.TrimSpace(h.Get("Cf-Connecting-Ip")); v != "" {
+		return parseRemote(v)
+	}
+	if xs := h.Values("X-Forwarded-For"); len(xs) > 0 {
+		parts := strings.Split(xs[len(xs)-1], ",")
+		return parseRemote(strings.TrimSpace(parts[len(parts)-1]))
+	}
+	return parseRemote(strings.TrimSpace(h.Get("X-Real-Ip")))
+}
+
+// Check decides a request: by its proxy-reported visitor when it comes through a trusted
+// proxy, otherwise by Allowed. It also returns the address the decision was about, for the log.
+func (p *Policy) Check(r *http.Request) (ok bool, why, who string) {
+	if ip, readable := parseRemote(r.RemoteAddr); readable && contains(p.proxies, ip) && Forwarded(r.Header) {
+		v, readable := visitor(r.Header)
+		if !readable {
+			return false, "proxied request without a readable visitor address", r.RemoteAddr
+		}
+		if !contains(p.visitors, v) {
+			return false, "visitor through the proxy is outside the allowed tunnel networks", v.String()
+		}
+		return true, "", v.String()
+	}
+	ok, why = p.Allowed(r.Context(), r.RemoteAddr)
+	return ok, why, r.RemoteAddr
 }
 
 func parseRemote(remote string) (netip.Addr, bool) {
@@ -206,8 +271,8 @@ func (p *Policy) identify(ctx context.Context, ip netip.Addr, remote string) ([]
 // Middleware refuses connections that are not allowed with a plain 403.
 func (p *Policy) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ok, why := p.Allowed(r.Context(), r.RemoteAddr); !ok {
-			p.logRefusal(r.RemoteAddr, why)
+		if ok, why, who := p.Check(r); !ok {
+			p.logRefusal(who, why)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

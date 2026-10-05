@@ -116,6 +116,15 @@ func run(cfg config.Config) error {
 		whois = access.TailscaleWhois(cfg.TailscaleSocket)
 	}
 	policy := access.New(nets, cfg.KnownDevices, whois, log.Printf)
+	proxies, err := cfg.ProxyNets() // already validated by config.Load
+	if err != nil {
+		return err
+	}
+	visitors, err := access.ParseNets(cfg.TunnelNets)
+	if err != nil {
+		return err
+	}
+	policy.TrustProxies(proxies, visitors)
 	fmt.Println(policy.Describe())
 	var gc *google.Client
 	if cfg.GoogleEnabled {

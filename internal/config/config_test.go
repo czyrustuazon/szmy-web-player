@@ -49,6 +49,31 @@ func TestAccessSettings(t *testing.T) {
 	if _, err := Load(env(map[string]string{"MP_ALLOWED_NETS": "wifi"})); err == nil || !strings.Contains(err.Error(), "MP_ALLOWED_NETS") {
 		t.Errorf("a typo in the network list must stop startup, not silently open or close the door: %v", err)
 	}
+	for key, bad := range map[string]string{"MP_TRUSTED_PROXIES": "wifi", "MP_TUNNEL_NETS": "10.0.0.0/99"} {
+		if _, err := Load(env(map[string]string{key: bad})); err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s=%s must stop startup: %v", key, bad, err)
+		}
+	}
+}
+
+func TestProxySettings(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TrustedProxies != "loopback,lan" || c.TunnelNets != "any" {
+		t.Fatalf("defaults: %+v", c)
+	}
+	if nets, err := c.ProxyNets(); err != nil || len(nets) != 8 {
+		t.Errorf("loopback,lan: %v %v", nets, err)
+	}
+	c, err = Load(env(map[string]string{"MP_TRUSTED_PROXIES": "None", "MP_TUNNEL_NETS": "tailscale"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nets, err := c.ProxyNets(); err != nil || nets != nil || c.TunnelNets != "tailscale" {
+		t.Errorf("none trusts no proxy: %v %v %+v", nets, err, c)
+	}
 }
 
 func TestBlankPasswordMeansOpenAccess(t *testing.T) {

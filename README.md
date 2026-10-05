@@ -129,12 +129,17 @@ volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `L` locate
 The player is meant for you and your devices, the same as `animedb.haruhi.one` and
 `anime-db-stream`. Every connection is checked, before anything else happens (login page and static
 files included), by the address it **really** comes from. Headers such as `X-Forwarded-For` are
-ignored, because anyone can forge them.
+ignored, because anyone can forge them. The one exception is a tunnel or reverse proxy running on
+your own machine or home network (`MP_TRUSTED_PROXIES`): it is the only one that knows the visitor's
+address, so the player believes its `CF-Connecting-IP` / `X-Forwarded-For` and checks that address
+against `MP_TUNNEL_NETS`.
 
 | Setting | Meaning |
 |---|---|
 | `MP_ALLOWED_NETS` | Networks that may connect. Default `tailscale,lan`: your Tailscale network (`100.64.0.0/10`) and private home-network ranges. Add or swap in your own CIDR such as `192.168.1.0/24`. Use just `tailscale` for the tailnet only. Loopback is always allowed (health checks). |
 | `MP_KNOWN_DEVICES` | Optional. Names of your devices (from `tailscale status`). Tailscale peers must then be one of them. The name comes from this host's own `tailscaled`, so a node of someone else sharing your tailnet cannot get in. Home-network devices are covered by `MP_ALLOWED_NETS`. Needs `tailscaled` on the host: the Makefile then mounts its socket via `docker-compose.tailscale.yml`. |
+| `MP_TRUSTED_PROXIES` | Where a tunnel or reverse proxy may connect from. Default `loopback,lan` (`cloudflared` on this host reaches the container from loopback or the Docker gateway). A request from there that carries a forwarding header is judged by the visitor address in that header instead. Headers from anywhere else (a tailnet peer, the internet) are still ignored. `none` never reads them. |
+| `MP_TUNNEL_NETS` | Where visitors arriving through such a proxy may come from. Default `any`, so a Google-sign-in tunnel works from anywhere. Narrow it (same syntax as `MP_ALLOWED_NETS`, e.g. your home's public address or your carrier's range) to put a network check back in front of the sign-in. A proxied request with no readable visitor address is refused. |
 | `BIND_ADDR` | Host address the port is published on. `0.0.0.0` (default) is every IPv4 interface; set it to the host's Tailscale address (`tailscale ip -4`) to listen on the tailnet only, like `BIND_ADDR` in `anime-db-stream`. |
 
 To reach it by name, as with `animedb.haruhi.one`, add a DNS record for a name of your choice that
@@ -144,8 +149,10 @@ Notes:
 
 - The port is published on IPv4 only on purpose. Docker's IPv6 forwarding hides the real client
   address, which would defeat the check.
-- Do not put this behind a public reverse proxy or tunnel without Google sign-in: the check sees
-  the proxy's address, not the visitor's. See [the Cloudflare Tunnel section](#reaching-it-through-a-cloudflare-tunnel-google-sign-in).
+- With no login configured (no password, no Google sign-in), any request that says it came through
+  a proxy or tunnel is refused with a 403, whatever its address. Without a login the network check
+  is the only lock, and a tunnel on this machine would otherwise make the whole internet look local.
+  See [the Cloudflare Tunnel section](#reaching-it-through-a-cloudflare-tunnel-google-sign-in).
 - A refusal is logged once per address per ten minutes, so a scanner cannot flood the log.
 - "At home" means the home network's private address ranges. A Tailscale device that is away from home
   reaches you through the tailnet and is allowed like any tailnet device (or only if it is a known
@@ -184,9 +191,16 @@ and anyone not signed in, sees nothing but the sign-in page.
 
 Notes:
 
-- Keep the default `MP_ALLOWED_NETS`. Tunnel connections come from this machine, which `lan` and
-  loopback cover. The player only ever sees that address, so the allowlist adds nothing here and
-  Google sign-in carries all of the protection.
+- Keep the default `MP_ALLOWED_NETS` and `MP_TRUSTED_PROXIES`. Tunnel connections come from this
+  machine, so they are judged by the visitor address `cloudflared` passes on, against
+  `MP_TUNNEL_NETS`. Its default, `any`, means **Google sign-in carries all of the protection** for
+  tunnel visitors. `MP_KNOWN_DEVICES` does not apply to them (they are not Tailscale peers).
+- **Recommended: put Cloudflare Access in front.** In Zero Trust → Access → Applications, add a
+  self-hosted application for `music.haruhi.one` with a policy that allows only your email
+  addresses. Cloudflare then checks identity at its edge, before a request reaches your machine, so
+  the player's own sign-in becomes a second lock instead of the only one.
+- Turning the login off (no password and no Google) does not open the tunnel: every request through
+  it is refused (see [Who can connect](#who-can-connect)).
 - The address must be listed exactly (case does not matter), and Google must have verified it.
   `you+tag@gmail.com` and `y.o.u@gmail.com` are different entries from `you@gmail.com`.
 - Sessions last 30 days. Remove an address and restart to cut it off; restarting also ends every

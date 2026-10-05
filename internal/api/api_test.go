@@ -273,6 +273,24 @@ func TestAuthDisabled(t *testing.T) {
 	}
 }
 
+func TestNoLoginRefusesProxiedRequests(t *testing.T) {
+	// Without a login, a tunnel on this machine would make the whole internet look local.
+	e := newEnv(t, false, false)
+	for _, h := range []string{"CF-Connecting-IP", "X-Forwarded-For", "Forwarded"} {
+		for _, url := range []string{"/", "/api/browse", "/api/stream?path=a.mp3"} {
+			rec := e.do("GET", url, nil, nil, func(r *http.Request) { r.Header.Set(h, "203.0.113.7") })
+			wantStatus(t, rec, 403)
+			if !strings.Contains(rec.Body.String(), "login is required") {
+				t.Errorf("%s %s: %s", h, url, rec.Body.String())
+			}
+		}
+	}
+	// With a login the request goes on to the login check as usual.
+	on := newEnv(t, false, true)
+	wantStatus(t, on.do("GET", "/api/browse", nil, nil, func(r *http.Request) { r.Header.Set("CF-Connecting-IP", "203.0.113.7") }), 401)
+	wantStatus(t, on.do("GET", "/api/browse", nil, on.login(), func(r *http.Request) { r.Header.Set("CF-Connecting-IP", "203.0.113.7") }), 200)
+}
+
 func TestBrowseAndTracks(t *testing.T) {
 	e := newEnv(t, false, false)
 	var br struct {

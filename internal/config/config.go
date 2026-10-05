@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -34,6 +35,8 @@ type Config struct {
 	AllowedNets     string   // who may connect, by network: see package access (default "tailscale,lan")
 	KnownDevices    []string // if set, Tailscale peers must be one of these device names
 	TailscaleSocket string   // tailscaled's local API socket, used to name Tailscale peers
+	TrustedProxies  string   // proxies/tunnels whose forwarding headers are believed ("none" = never), default "loopback,lan"
+	TunnelNets      string   // where a visitor arriving through such a proxy may come from, default "any"
 
 	// Sign in with Google, for reaching the player through a public tunnel. Only the listed
 	// addresses get in. Needs MP_PUBLIC_URL, the address people type (https://music.example.org).
@@ -91,6 +94,8 @@ func Load(getenv func(string) string) (Config, error) {
 		AllowedNets:     str("MP_ALLOWED_NETS", "tailscale,lan"),
 		KnownDevices:    access.ParseDevices(getenv("MP_KNOWN_DEVICES")),
 		TailscaleSocket: str("MP_TAILSCALE_SOCKET", "/var/run/tailscale/tailscaled.sock"),
+		TrustedProxies:  str("MP_TRUSTED_PROXIES", "loopback,lan"),
+		TunnelNets:      str("MP_TUNNEL_NETS", "any"),
 
 		GoogleClientID:     str("MP_GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: str("MP_GOOGLE_CLIENT_SECRET", ""),
@@ -131,6 +136,12 @@ func Load(getenv func(string) string) (Config, error) {
 	if _, err := access.ParseNets(c.AllowedNets); err != nil {
 		return Config{}, fmt.Errorf("MP_ALLOWED_NETS: %w", err)
 	}
+	if _, err := c.ProxyNets(); err != nil {
+		return Config{}, fmt.Errorf("MP_TRUSTED_PROXIES: %w", err)
+	}
+	if _, err := access.ParseNets(c.TunnelNets); err != nil {
+		return Config{}, fmt.Errorf("MP_TUNNEL_NETS: %w", err)
+	}
 	if c.TrashMinutes < 1 {
 		return Config{}, fmt.Errorf("MP_TRASH_MINUTES must be at least 1")
 	}
@@ -156,6 +167,14 @@ func (c Config) checkGoogle() error {
 		return fmt.Errorf("MP_PUBLIC_URL must be the address people type, like https://music.example.org (got %q)", c.PublicURL)
 	}
 	return nil
+}
+
+// ProxyNets parses MP_TRUSTED_PROXIES; "none" means no proxy is trusted (nil).
+func (c Config) ProxyNets() ([]netip.Prefix, error) {
+	if strings.EqualFold(c.TrustedProxies, "none") {
+		return nil, nil
+	}
+	return access.ParseNets(c.TrustedProxies)
 }
 
 // GoogleRedirectURL is the callback address to register in the Google Cloud console.

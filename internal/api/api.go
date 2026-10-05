@@ -120,10 +120,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/errors", s.protect(s.errorLines))
 	mux.Handle("/", s.static())
 	h := s.secure(mux)
+	if s.Auth.Disabled() {
+		h = refuseProxied(h)
+	}
 	if s.Access != nil {
 		h = s.Access.Middleware(h) // outermost: a refused address never reaches anything, not even the login or static files
 	}
 	return h
+}
+
+// refuseProxied guards the no-login mode. Without a login the network check is the only
+// lock, and a tunnel or reverse proxy on this machine makes the whole internet look local, so
+// anything that says it came through one is refused. Forging the header only gets you refused.
+func refuseProxied(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if access.Forwarded(r.Header) {
+			writeErr(w, http.StatusForbidden, "a login is required for connections through a proxy or tunnel: set MP_ADMIN_PASSWORD or Google sign-in")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // secure adds security headers and CSRF protection: every state-changing
