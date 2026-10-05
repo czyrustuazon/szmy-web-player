@@ -739,9 +739,7 @@ func (m *Manager) runArchive(key, clean, destDir, stagingPath, metaPath string, 
 		discard(stagingPath, metaPath)
 		return
 	}
-	if !joinsExistingFolder(tmp, destDir) {
-		flattenWrapper(tmp)
-	}
+	unwrapLone(tmp, destDir)
 	var added mergeStats
 	if err := m.merge(tmp, destDir, &added); err != nil {
 		fail("%v", err)
@@ -1040,27 +1038,25 @@ func (m *Manager) Report(relPath, filename string) (string, error) {
 	return p, nil
 }
 
-// joinsExistingFolder is true when the archive holds a single folder that already exists in the
-// destination. That folder is then real content to merge into, not a wrapper to remove: without
-// this, an archive with a few new files for one album would lose its folder name and land at the
-// top of the destination.
-func joinsExistingFolder(tmp, destDir string) bool {
-	entries, err := os.ReadDir(tmp)
-	if err != nil || len(entries) != 1 || !entries[0].IsDir() {
-		return false
-	}
-	st, err := os.Lstat(filepath.Join(destDir, entries[0].Name()))
-	return err == nil && st.IsDir()
-}
-
 // flattenWrapper moves a lone top-level folder's contents up into dir, for as
 // long as dir holds exactly one entry and it is a folder ("Album/Disc 1/x.flac"
 // archives are common).
-func flattenWrapper(dir string) {
+func flattenWrapper(dir string) { unwrapLone(dir, "") }
+
+// unwrapLone is flattenWrapper that stops at a folder which already exists in destDir (when given).
+// That folder is real content to merge into, not a wrapper to remove: without this, an archive
+// with a few new files for one album would lose its folder name and land at the top of the
+// destination.
+func unwrapLone(dir, destDir string) {
 	for depth := 0; depth < 8; depth++ { // bounded: never loops forever on odd layouts
 		entries, err := os.ReadDir(dir)
 		if err != nil || len(entries) != 1 || !entries[0].IsDir() {
 			return
+		}
+		if destDir != "" {
+			if st, err := os.Lstat(filepath.Join(destDir, entries[0].Name())); err == nil && st.IsDir() {
+				return
+			}
 		}
 		wrapper := filepath.Join(dir, entries[0].Name())
 		inner, _ := os.ReadDir(wrapper)

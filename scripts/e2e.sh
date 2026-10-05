@@ -45,6 +45,10 @@ docker run --rm -v "$tmp/fixtures:/f" --entrypoint sh "$IMG" -c '
   ffmpeg -v error $tone $tags -c:a wavpack ff/song.wv
   ffmpeg -v error $tone $tags -c:a flac ff/song.mka
   ffmpeg -v error $tone $tags -c:a libmp3lame ff/song.flv
+  # A "delta" for the merge test: one new file inside a folder the album already has.
+  mkdir -p delta/CD2
+  cp ff/song.wma delta/CD2/extra.wma
+  7z a -tzip delta.zip delta/CD2 >/dev/null
   chmod -R a+rX /f
 '
 

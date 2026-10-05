@@ -1017,4 +1017,11 @@ func TestALoneFolderThatAlreadyExistsIsMergedNotUnwrapped(t *testing.T) {
 	if !exists(filepath.Join(root, "uploads", "Album", "x.mp3")) {
 		t.Error("a new lone folder is a wrapper and is unwrapped")
 	}
+	// A wrapper around a folder that already exists: the wrapper goes, the existing folder stays.
+	fourth := zipOf(t, map[string][]byte{"Outer/d2/y.mp3": append(append([]byte{}, mp3...), 0xFF, 0xFB, 0x90, 5)})
+	send(t, m, rel, "four.zip", fourth, 4096)
+	finish(t, m, rel, "four.zip", len(fourth))
+	if !exists(filepath.Join(root, "uploads", "Album", "d2", "y.mp3")) {
+		t.Error("the folder inside the wrapper already exists, so it is merged into")
+	}
 }

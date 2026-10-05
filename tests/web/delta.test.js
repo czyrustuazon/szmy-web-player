@@ -31,6 +31,11 @@ test('a folder listing yields pictures, ffmpeg audio and archives only', () => {
   assert.deepEqual(r, { images: ['cover.jpg'], audio: ['b.wma', 'C.APE'], archives: ['more.7z'] });
 });
 
+test('inside a nested archive everything but pictures beyond the limit is new', () => {
+  const r = pick([{ name: 'a.mp3', size: 1 }, { name: 'b.flac', size: 1 }, { name: 'cover.jpg', size: 1 }, { name: 'log.txt', size: 1 }, { name: 'deeper.zip', size: 1 }], true);
+  assert.deepEqual(r, { images: ['cover.jpg'], audio: ['a.mp3', 'b.flac', 'log.txt'], archives: ['deeper.zip'] });
+});
+
 test('collect takes at most three real pictures per folder and the ffmpeg audio, nothing else', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'delta-test-'));
   try {

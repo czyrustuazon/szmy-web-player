@@ -4,8 +4,9 @@
 //   - cover pictures: up to three real images per folder, cover/folder/front... first (the same
 //     rule the server applies), which the player uses as cover art;
 //   - audio in formats the server could not play before ffmpeg (WMA, APE, WavPack, FLV, ...);
-//   - archives found inside the folders (.7z .zip .rar) are unpacked here and the same rules apply
-//     to what is in them, in a folder named after the archive.
+//   - archives found inside the folders (.7z .zip .rar) are unpacked here, into a folder named
+//     after the archive. The server never opens archives inside archives, so everything in them is
+//     new: all of their audio is taken, not just the ffmpeg formats.
 //
 // Everything else (the mp3/flac files that are already on the server) is left out.
 //
@@ -72,11 +73,15 @@ function readHead(file, n = 16) {
 
 // Decides what to take from one folder listing. `files` are {name, size}; returns the names to
 // copy and, separately, the nested archives to open.
-export function pick(files) {
+export function pick(files, insideArchive = false) {
   const images = rankImages(files.filter((f) => f.size <= MAX_IMAGE_BYTES).map((f) => f.name));
+  // What was inside an archive never reached the server (nested archives are not opened there),
+  // so all of it is new; the server keeps the audio and drops the rest. Elsewhere only the
+  // formats the server could not play before ffmpeg are missing.
+  const wanted = (f) => (insideArchive ? !IMAGE_EXTS.has(ext(f.name)) && !NESTED_ARCHIVES.has(ext(f.name)) : FFMPEG_EXTS.has(ext(f.name)));
   return {
     images,
-    audio: files.filter((f) => FFMPEG_EXTS.has(ext(f.name))).map((f) => f.name),
+    audio: files.filter(wanted).map((f) => f.name),
     archives: files.filter((f) => NESTED_ARCHIVES.has(ext(f.name))).map((f) => f.name),
   };
 }
@@ -99,7 +104,7 @@ export function collect(dir, rel, ctx) {
     if (e.isDirectory()) collect(full, rel ? `${rel}/${e.name}` : e.name, ctx);
     else if (e.isFile()) files.push({ name: e.name, size: fs.statSync(full).size });
   }
-  const { images, audio, archives } = pick(files);
+  const { images, audio, archives } = pick(files, ctx.depth > 0);
   const take = (name, kind) => {
     ctx.take(path.join(dir, name), rel ? `${rel}/${name}` : name, kind);
   };
