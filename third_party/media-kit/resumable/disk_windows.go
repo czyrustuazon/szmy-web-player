@@ -1,6 +1,6 @@
 //go:build windows
 
-package upload
+package resumable
 
 import "errors"
 
