@@ -5,7 +5,7 @@ import { Visualizer } from './viz.js';
 import { VirtualList } from './ui.js';
 import { initUploadView } from './uploadview.js';
 import { SearchState, SEP, stemOf, dirOf, highlight } from './searchstate.js';
-import { $, kindLabel, fmtTime, icon, escapeHTML, toast, setMarquee, debounce } from './util.js';
+import { $, kindLabel, fmtTime, icon, escapeHTML, toast, ask, setMarquee, debounce } from './util.js';
 
 const ROW_H = 60;
 const MAX_SKIPS = 5; // consecutive undecodable tracks before auto-advance gives up
@@ -403,7 +403,12 @@ async function toggleFav(e) {
 }
 
 async function renameFolder(e) {
-  const name = prompt('Rename folder (type the name of another folder here to merge into it)', e.name)?.trim();
+  const name = (await ask({
+    title: 'Rename folder',
+    message: 'Type the name of another folder here to merge into it.',
+    ok: 'Rename',
+    value: e.name,
+  }))?.trim();
   if (!name || name === e.name) return;
   let res;
   try {
@@ -422,7 +427,12 @@ async function renameFolder(e) {
 // A folder of that name already exists: offer to merge into it. Identical files are skipped and
 // nothing is overwritten.
 async function mergeFolder(e, name) {
-  if (!confirm(`A folder named "${name}" already exists here. Merge "${e.name}" into it?\n\nFiles that are already there are skipped, nothing is overwritten.`)) return;
+  const yes = await ask({
+    title: `Merge into "${name}"?`,
+    message: `A folder named "${name}" already exists here. Merge "${e.name}" into it?\n\nFiles that are already there are skipped, nothing is overwritten.`,
+    ok: 'Merge',
+  });
+  if (!yes) return;
   const parent = dirOf(e.path);
   let res;
   try {
@@ -438,9 +448,9 @@ async function mergeFolder(e, name) {
 }
 
 async function deleteTrack(e) {
-  if (e.isDir && !confirm(`Delete folder "${e.name}" and everything in it?`)) return;
+  if (e.isDir && !(await ask({ title: `Delete "${e.name}"?`, message: 'The folder and everything in it will be deleted.', ok: 'Delete', danger: true }))) return;
   // A favorite is worth a second look; everything else goes straight away (Undo is in the toast).
-  if (!e.isDir && e.fav && !confirm(`"${e.title ?? stem(e.name)}" is a favorite. Delete it anyway?`)) return;
+  if (!e.isDir && e.fav && !(await ask({ title: `Delete "${e.title ?? stem(e.name)}"?`, message: 'This track is a favorite.', ok: 'Delete', danger: true }))) return;
   const wasPlaying = player.playing;
   let res;
   try {
@@ -824,7 +834,7 @@ const KONAMI = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'Ar
 let konami = 0;
 
 document.addEventListener('keydown', (e) => {
-  if (e.target.closest?.('input, select, textarea')) return;
+  if (e.target.closest?.('input, select, textarea, dialog')) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
   // Konami easter egg; while it is in progress its keys do nothing else.

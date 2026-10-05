@@ -182,6 +182,22 @@ input[type="range"] { flex: 1; min-height: 44px; accent-color: var(--accent); ba
 body:not(.has-player) .toast { bottom: calc(var(--tab-h) + var(--sab) + 12px); }
 .toast button { color: var(--accent); font-weight: 700; min-height: 36px; padding: 0 8px; }
 
+/* In-app replacement for confirm() / prompt(); a native <dialog>, so focus, Escape and the backdrop come free. */
+.dlg {
+  width: min(400px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 16px;
+  background: var(--panel); color: var(--text); box-shadow: 0 12px 40px rgb(0 0 0 / .35);
+}
+.dlg::backdrop { background: rgb(0 0 0 / .5); }
+.dlg form { display: grid; gap: 12px; padding: 20px; }
+.dlg h2 { margin: 0; font-size: 1.1rem; overflow-wrap: anywhere; }
+.dlg p { margin: 0; color: var(--dim); white-space: pre-line; overflow-wrap: anywhere; }
+.dlg input {
+  width: 100%; min-height: 44px; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--text); font: inherit;
+}
+.dlg-btns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.primary.warn { background: var(--danger); }
+
 @media (min-width: 900px) {
   .list, .top, .mini, .tabs { max-width: 900px; width: 100%; margin-inline: auto; }
   #app { background: var(--bg); }

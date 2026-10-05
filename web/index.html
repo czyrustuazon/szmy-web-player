@@ -177,6 +177,18 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
+<dialog id="dlg" class="dlg" aria-labelledby="dlg-title">
+  <form method="dialog">
+    <h2 id="dlg-title"></h2>
+    <p id="dlg-msg"></p>
+    <input id="dlg-input" type="text" maxlength="120" autocomplete="off" aria-labelledby="dlg-title" hidden>
+    <div class="dlg-btns">
+      <button id="dlg-cancel" class="secondary" type="button">Cancel</button>
+      <button id="dlg-ok" class="primary" value="ok">OK</button>
+    </div>
+  </form>
+</dialog>
+
 <script type="module" src="/js/main.js"></script>
 </body>
 </html>

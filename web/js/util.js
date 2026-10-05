@@ -47,6 +47,38 @@ export function toast(message, { action, onAction, ms = 3500 } = {}) {
   toastTimer = setTimeout(() => (box.hidden = true), ms);
 }
 
+// Ask the user something in the app's own modal instead of confirm() / prompt(). Pass `value` to
+// get a text field (resolves to its text); without it, resolves to true. Cancel, Escape or a tap
+// on the backdrop resolve to null.
+export function ask({ title, message = '', ok = 'OK', danger = false, value } = {}) {
+  const dlg = $('#dlg');
+  const input = $('#dlg-input');
+  const okBtn = $('#dlg-ok');
+  $('#dlg-title').textContent = title;
+  $('#dlg-msg').textContent = message;
+  $('#dlg-msg').hidden = !message;
+  input.hidden = value === undefined;
+  input.value = value ?? '';
+  okBtn.textContent = ok;
+  okBtn.classList.toggle('warn', danger);
+  if (!dlg.dataset.wired) {
+    dlg.dataset.wired = '1';
+    $('#dlg-cancel').addEventListener('click', () => dlg.close());
+    // A click on the dialog element itself (not its form) is a click on the backdrop.
+    dlg.addEventListener('click', (e) => e.target === dlg && dlg.close());
+  }
+  dlg.returnValue = '';
+  dlg.showModal();
+  if (value !== undefined) input.select();
+  else (danger ? $('#dlg-cancel') : okBtn).focus(); // Enter should not destroy anything by accident
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => {
+      if (dlg.returnValue !== 'ok') resolve(null);
+      else resolve(value === undefined ? true : input.value);
+    }, { once: true });
+  });
+}
+
 // Scroll long titles horizontally when they overflow, like szmy's tag ticker.
 export function setMarquee(el, text) {
   el.textContent = '';
