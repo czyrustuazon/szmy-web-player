@@ -195,10 +195,7 @@ Notes:
   machine, so they are judged by the visitor address `cloudflared` passes on, against
   `MP_TUNNEL_NETS`. Its default, `any`, means **Google sign-in carries all of the protection** for
   tunnel visitors. `MP_KNOWN_DEVICES` does not apply to them (they are not Tailscale peers).
-- **Recommended: put Cloudflare Access in front.** In Zero Trust → Access → Applications, add a
-  self-hosted application for `music.haruhi.one` with a policy that allows only your email
-  addresses. Cloudflare then checks identity at its edge, before a request reaches your machine, so
-  the player's own sign-in becomes a second lock instead of the only one.
+- **Recommended: put Cloudflare Access in front** (next section).
 - Turning the login off (no password and no Google) does not open the tunnel: every request through
   it is refused (see [Who can connect](#who-can-connect)).
 - The address must be listed exactly (case does not matter), and Google must have verified it.
@@ -207,6 +204,38 @@ Notes:
   session.
 - Pointing `music.haruhi.one` at the tunnel replaces its Tailscale DNS record. Other names, such as
   `animedb.haruhi.one`, are unaffected.
+
+### Cloudflare Access in front (recommended)
+
+Cloudflare Access checks who you are at Cloudflare's edge, before a request reaches your machine.
+Strangers never touch the player at all (not even its static files or sign-in routes), and the
+player's own Google sign-in becomes a second lock instead of the only one. The free plan covers it.
+
+1. **dash.cloudflare.com → Zero Trust** (the dashboard calls it *Cloudflare One*). The first time,
+   pick a team name (it becomes `<team>.cloudflareaccess.com`) and the Free plan. Skip the
+   "What would you like to do next?" cards; everything is in the left sidebar.
+2. **Access controls → Applications → Add an application → Self-hosted.** Domain
+   `music.haruhi.one`, path empty (the whole site). Set the session duration to something long,
+   such as a month: the app is a PWA, and when the Access session runs out its background requests
+   fail until you reload.
+3. **Login method.** *One-time PIN* (Cloudflare emails a code) is on by default and is enough. To
+   click through with Google instead, add it under **Integrations → Identity providers → Google**,
+   with an OAuth client whose redirect URI is
+   `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`, then tick it on the
+   application's Authentication screen.
+4. **Policy: who may get in.** Action *Allow*, **Include → Emails** → your address(es), the same
+   ones as `MP_ALLOWED_EMAILS`. Not *Everyone*, and not *Emails ending in* `@gmail.com`, which
+   would let any Gmail user past this lock.
+5. **Attach the policy to the application and save it.** A policy made under Access controls →
+   Policies does nothing until it is listed on the application's Policies tab. Symptom when it is
+   missing: the one-time PIN never arrives, because Cloudflare only emails codes to addresses a
+   policy on the application allows (and shows the same "code sent" page either way).
+
+Check it from a private window: `music.haruhi.one` should send you to
+`<team>.cloudflareaccess.com`, your email should get a code and then the player's own sign-in, and
+any other email should get no code. From outside, every path (including `/api/...`, `/healthz`
+and `/auth/google/...`) should answer with a redirect to the Access login, never with the player.
+Optionally turn on HSTS under SSL/TLS → Edge Certificates; the player does not send it itself.
 
 ## Search
 
@@ -337,7 +366,8 @@ proxy, allow request bodies of at least 16 MiB.
 - Passwords are stored as salted, iterated SHA-256 hashes. After 10 wrong passwords from one
   address (one /64 for IPv6; behind a tunnel, the visitor's address) that address is refused for
   15 minutes, and at most two password checks run at once, so a flood of guesses cannot hog the
-  CPU. This is a single-user login; prefer Google sign-in (and Cloudflare Access) for the internet.
+  CPU. This is a single-user login; prefer Google sign-in (and
+  [Cloudflare Access](#cloudflare-access-in-front-recommended)) for the internet.
 - Sign in with Google keeps nothing on the server for a sign-in in progress: the PKCE verifier
   and nonce travel in a signed, `HttpOnly` cookie, so strangers starting sign-ins cannot fill up a
   table and lock you out.
