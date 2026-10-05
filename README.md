@@ -7,9 +7,10 @@ including **sample-accurate loop points**. Phone-first layout, installable as a 
 
 One Go binary (standard library only) with the web app embedded. Runs in Docker.
 
-> **Status:** written without a Go toolchain or Docker available, so the Go code and the
-> container have **not been compiled or run yet**. The browser logic is tested with Node
-> (`make web-test`). Run `make test` and `make smoke` first; see [First run](#first-run-checklist).
+> **Testing:** `make test` runs `go vet`, `go test` and a 100% coverage gate for `internal/`
+> in a throwaway container; `make smoke` builds the image and checks login, browsing and
+> streaming against a fixture library; `make web-test` covers the browser logic with Node.
+> On a new host, start with the [First-run checklist](#first-run-checklist).
 > The Makefile follows the `anime-db-stream` template (`make help` lists the targets).
 
 ## Quick start
