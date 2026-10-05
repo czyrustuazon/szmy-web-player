@@ -91,12 +91,20 @@ export class Visualizer {
     const n = this.bars.length;
     const gap = Math.max(2, w / n / 6);
     const bw = (w - gap * (n - 1)) / n;
+    // Band level = mean of its bins (at least two, so narrow low bands don't ride a
+    // single noisy bin), then blended with the neighbours so adjacent bars move together.
+    const raw = new Array(n);
     for (let i = 0; i < n; i++) {
-      let peak = 0;
       const a = this.edges[i];
-      const b = Math.max(a + 1, this.edges[i + 1]);
-      for (let k = a; k < b && k < this.freq.length; k++) peak = Math.max(peak, this.freq[k]);
-      const v = Math.sqrt(peak / 255) * 255; // perceptual square-root scaling
+      const b = Math.min(this.freq.length, Math.max(a + 2, this.edges[i + 1]));
+      let sum = 0;
+      for (let k = a; k < b; k++) sum += this.freq[k];
+      raw[i] = sum / Math.max(1, b - a);
+    }
+    for (let i = 0; i < n; i++) {
+      const l = raw[Math.max(0, i - 1)];
+      const r = raw[Math.min(n - 1, i + 1)];
+      const v = Math.sqrt((l * 0.25 + raw[i] * 0.5 + r * 0.25) / 255) * 255; // perceptual square-root scaling
       this.bars[i] = step(this.bars[i], v, dt);
       const bh = (this.bars[i] / 255) * h;
       g.fillRect(i * (bw + gap), h - bh, bw, bh);
