@@ -614,7 +614,8 @@ vol.addEventListener('change', () => vol.blur());
 // ------------------------------------------------------------------ visualizer
 
 function ensureViz() {
-  if (state.viz || !player.analyser) return;
+  if (state.viz) return;
+  player.ensureContext(); // the analyser only exists once the audio graph does
   state.viz = new Visualizer($('#fp-canvas'), player.analyser, player.ctx.sampleRate);
   state.viz.setMode(state.settings?.vizMode || 'bars');
 }

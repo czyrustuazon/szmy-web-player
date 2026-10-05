@@ -115,7 +115,7 @@ export class Player extends EventTarget {
     this.ctx = new Ctx();
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 2048;
-    this.analyser.smoothingTimeConstant = 0.3;
+    this.analyser.smoothingTimeConstant = 0.6;
     this.volGain = this.ctx.createGain();
     this.volGain.gain.value = this.volume;
     this.ctx.createMediaElementSource(this.audio).connect(this.analyser);

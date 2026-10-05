@@ -1,11 +1,10 @@
 // Visualizer: equalizer bars and waveform scope, like szmy's audio_viz.
 //
 // Bars: log-spaced bands from 80 Hz to 12 kHz. A bar rises instantly to a
-// new peak and falls by "half plus 8" of its value per tick (0..255 scale).
+// new peak and falls smoothly (see step), on a 0..255 scale.
 // Scope: peak-preserving decimation of the time-domain signal.
 
 const BANDS = 24;
-const TICK_MS = 33;
 
 export function bandEdges(sampleRate, bins, bands = BANDS) {
   const lo = 80;
@@ -18,8 +17,12 @@ export function bandEdges(sampleRate, bins, bands = BANDS) {
   return edges;
 }
 
-export function decay(v) {
-  return Math.max(0, v - (v / 2 + 8));
+// Next bar value: rises quickly toward a louder target, falls smoothly (about
+// 10% per 60 Hz frame) so frame-rate jitter and brief dips don't flutter.
+export function step(v, target, dtMs) {
+  if (target > v) return v + (target - v) * 0.6;
+  const next = v * Math.pow(0.9, dtMs / 16.7);
+  return next < 1 ? 0 : Math.max(target, next);
 }
 
 export class Visualizer {
@@ -45,10 +48,10 @@ export class Visualizer {
     if (this.raf || this.mode === 'off') return;
     const loop = (t) => {
       this.raf = requestAnimationFrame(loop);
-      if (t - this.last >= TICK_MS) {
-        this.last = t;
-        this.draw();
-      }
+      // Draw every frame: a fixed 33 ms throttle beats against 60 Hz vsync and judders.
+      const dt = this.last ? Math.min(100, t - this.last) : 16.7;
+      this.last = t;
+      this.draw(dt);
     };
     this.raf = requestAnimationFrame(loop);
   }
@@ -56,6 +59,7 @@ export class Visualizer {
   stop() {
     cancelAnimationFrame(this.raf);
     this.raf = 0;
+    this.last = 0;
     const { width, height } = this.canvas;
     this.ctx2d.clearRect(0, 0, width, height);
   }
@@ -71,7 +75,7 @@ export class Visualizer {
     return { w, h };
   }
 
-  draw() {
+  draw(dt = 16.7) {
     const { w, h } = this._size();
     const g = this.ctx2d;
     g.clearRect(0, 0, w, h);
@@ -79,10 +83,10 @@ export class Visualizer {
     g.fillStyle = css.getPropertyValue('--viz').trim() || '#6cf';
     g.strokeStyle = g.fillStyle;
     if (this.mode === 'scope') this._scope(g, w, h);
-    else this._bars(g, w, h);
+    else this._bars(g, w, h, dt);
   }
 
-  _bars(g, w, h) {
+  _bars(g, w, h, dt) {
     this.analyser.getByteFrequencyData(this.freq);
     const n = this.bars.length;
     const gap = Math.max(2, w / n / 6);
@@ -93,7 +97,7 @@ export class Visualizer {
       const b = Math.max(a + 1, this.edges[i + 1]);
       for (let k = a; k < b && k < this.freq.length; k++) peak = Math.max(peak, this.freq[k]);
       const v = Math.sqrt(peak / 255) * 255; // perceptual square-root scaling
-      this.bars[i] = v > this.bars[i] ? v : decay(this.bars[i]);
+      this.bars[i] = step(this.bars[i], v, dt);
       const bh = (this.bars[i] / 255) * h;
       g.fillRect(i * (bw + gap), h - bh, bw, bh);
     }

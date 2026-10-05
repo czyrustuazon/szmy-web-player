@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loopPosition, loopRunTime } from '../../web/js/player.js';
-import { bandEdges, decay } from '../../web/js/viz.js';
+import { bandEdges, step } from '../../web/js/viz.js';
 
 test('loopPosition is linear before the loop end', () => {
   assert.equal(loopPosition(5, 10, 60), 5);
@@ -34,8 +34,10 @@ test('bandEdges are increasing, within range and span 80 Hz..12 kHz', () => {
   assert.ok(Math.abs(hz(edges[24]) - 12000) < 30);
 });
 
-test('decay drops by half plus 8 and floors at zero', () => {
-  assert.equal(decay(100), 42);
-  assert.equal(decay(10), 0);
-  assert.equal(decay(0), 0);
+test('step rises fast, falls smoothly and settles at zero', () => {
+  assert.ok(step(0, 100, 16.7) > 50);
+  const fall = step(100, 0, 16.7);
+  assert.ok(fall > 85 && fall < 95);
+  assert.equal(step(0.5, 0, 16.7), 0);
+  assert.equal(step(100, 95, 16.7), 95); // never undershoots the target
 });
