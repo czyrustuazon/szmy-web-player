@@ -22,8 +22,8 @@ make up                     # build from scratch and start
 make logs                   # prints a generated password once on first run
 ```
 
-Open <http://localhost:8080>. Set `MP_ADMIN_PASSWORD` in `.env` to choose your own password
-instead. `make help` lists every target (`dev` for fast rebuilds, `down`, `restart`, `shell`,
+Open <http://localhost:8787> (change the host port with `PORT` in `.env`). Set
+`MP_ADMIN_PASSWORD` in `.env` to choose your own password instead. `make help` lists every target (`dev` for fast rebuilds, `down`, `restart`, `shell`,
 `status`, `clean`, `test`, `smoke`, `deploy`).
 
 ### Without Docker
