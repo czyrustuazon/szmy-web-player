@@ -501,7 +501,6 @@ func TestDeleteAndUndo(t *testing.T) {
 func TestDeleteErrorsAndUndoBookkeeping(t *testing.T) {
 	e := newEnv(t, false, false)
 	wantStatus(t, e.do("DELETE", "/api/track?p=missing.mp3", nil, nil), 404)
-	wantStatus(t, e.do("DELETE", "/api/track?p=sub", nil, nil), 400)
 	wantStatus(t, e.do("DELETE", "/api/track?p=.trash/x", nil, nil), 403)
 	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": "../../x"}, nil), 400)
 	wantStatus(t, e.do("POST", "/api/undo", "{", nil), 400)

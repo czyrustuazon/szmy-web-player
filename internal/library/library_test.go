@@ -435,7 +435,7 @@ func TestRenameFolder(t *testing.T) {
 	if got, err = l.Rename("nested", "Nested2"); err != nil || got != "Nested2" {
 		t.Errorf("top-level rename: %q %v", got, err)
 	}
-	for _, bad := range []string{"", ".", "..", ".x", "a/b", `a`, " pad"} {
+	for _, bad := range []string{"", ".", "..", ".x", "a/b", `a\`, " pad"} {
 		if _, err := l.Rename("Nested2", bad); !errors.Is(err, ErrBadName) {
 			t.Errorf("name %q: %v", bad, err)
 		}

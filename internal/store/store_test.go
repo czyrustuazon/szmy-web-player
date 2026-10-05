@@ -203,3 +203,29 @@ func TestSaveFailureIsReported(t *testing.T) {
 		t.Error("save into an impossible path must fail")
 	}
 }
+
+func TestPlaysCountAndFollowRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		if n, err := s.RecordPlay("old/a.mp3"); err != nil || n != i {
+			t.Fatalf("RecordPlay = %d, %v; want %d", n, err, i)
+		}
+	}
+	if err := s.MovePlays("old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Plays("old/a.mp3") != 0 || s.Plays("new/a.mp3") != 2 {
+		t.Fatalf("plays did not follow the rename: %d %d", s.Plays("old/a.mp3"), s.Plays("new/a.mp3"))
+	}
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Plays("new/a.mp3") != 2 {
+		t.Fatal("plays not persisted")
+	}
+}

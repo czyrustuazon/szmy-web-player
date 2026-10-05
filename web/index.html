@@ -118,6 +118,8 @@
     <label class="field">Folder name <span class="sub">(optional)</span>
       <input id="up-folder" type="text" maxlength="120" placeholder="Album or collection name" autocomplete="off">
     </label>
+    <label class="field check"><input id="up-merge" type="checkbox"> Add to the folder with this name if it already exists
+      <span class="sub">Files that are already there are skipped, nothing is overwritten.</span></label>
     <p id="up-7z" class="notice" hidden>This server cannot unpack .7z archives (7z is not installed there). Use a .zip instead.</p>
     <p id="up-resume" class="notice" hidden></p>
     <ul id="up-files" class="files"></ul>

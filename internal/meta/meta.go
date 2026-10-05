@@ -89,8 +89,22 @@ func finish(t *Tags, path string) {
 	t.Year = trimYear(t.Year)
 }
 
+// sambaEscape matches the #UXXXX sequences Samba/zip tools write into file
+// names they cannot store as Unicode (e.g. #U30ed for ロ).
+var sambaEscape = regexp.MustCompile(`#U([0-9A-Fa-f]{4})`)
+
+func decodeSambaEscapes(s string) string {
+	return sambaEscape.ReplaceAllStringFunc(s, func(m string) string {
+		n, err := strconv.ParseUint(m[2:], 16, 32)
+		if err != nil {
+			return m
+		}
+		return string(rune(n))
+	})
+}
+
 func titleFromName(path string) string {
-	base := filepath.Base(path)
+	base := decodeSambaEscapes(filepath.Base(path))
 	name := strings.TrimSuffix(base, filepath.Ext(base))
 	name = strings.TrimSpace(strings.ReplaceAll(name, "_", " "))
 	if name == "" {

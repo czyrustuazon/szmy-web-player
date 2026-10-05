@@ -113,9 +113,11 @@ a.btn { display: grid; place-items: center; text-decoration: none; }
 .tab.active { color: var(--accent); }
 
 .ticker { display: block; white-space: nowrap; overflow: hidden; }
-.ticker.marquee { text-overflow: clip; animation: ticker var(--dur, 10s) ease-in-out infinite alternate; }
+.ticker-in { display: inline-block; }
+.ticker.marquee { text-overflow: clip; }
+.ticker.marquee .ticker-in { animation: ticker var(--dur, 10s) ease-in-out infinite alternate; }
 @keyframes ticker { 0%, 15% { transform: translateX(0); } 85%, 100% { transform: translateX(var(--shift)); } }
-@media (prefers-reduced-motion: reduce) { .ticker.marquee { animation: none; text-overflow: ellipsis; } }
+@media (prefers-reduced-motion: reduce) { .ticker.marquee { text-overflow: ellipsis; } .ticker.marquee .ticker-in { animation: none; } }
 
 /* ---------------------------------------------------------------- sheets */
 .sheet {
@@ -204,6 +206,9 @@ body:not(.has-player) .toast { bottom: calc(var(--tab-h) + var(--sab) + 12px); }
 .drop .ic { width: 36px; height: 36px; }
 .drop:hover, .drop.over { border-color: var(--accent); color: var(--accent); }
 .field { display: grid; gap: 6px; color: var(--dim); font-size: .85rem; }
+.field.check { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--text); min-height: 44px; }
+.field.check input { width: 22px; height: 22px; }
+.field.check .sub { flex-basis: 100%; padding-left: 32px; }
 .field input[type="text"] {
   width: 100%; min-height: 44px; padding: 8px 12px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--panel2); color: var(--text); font: inherit;

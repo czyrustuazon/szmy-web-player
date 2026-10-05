@@ -15,7 +15,7 @@ import (
 // The upload endpoints implement the chunked, resumable protocol described in
 // package upload (the same one anime-db-stream uses):
 //
-//	POST /api/upload/start    {title}                          -> {name, relPath}
+//	POST /api/upload/start    {title, merge?}                  -> {name, relPath}
 //	POST /api/upload/begin    {relPath, filename, size}        -> {offset}
 //	POST /api/upload/chunk    ?relPath=&filename=&offset=      -> {offset}
 //	                          header X-Chunk-CRC32, raw body
@@ -50,11 +50,16 @@ func (s *Server) uploadStart(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Title string `json:"title"`
+		Merge bool   `json:"merge"` // add to the folder of that name if it exists
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	name, relPath, err := s.Up.Start(body.Title)
+	start := s.Up.Start
+	if body.Merge {
+		start = s.Up.StartOrJoin
+	}
+	name, relPath, err := start(body.Title)
 	if err != nil {
 		s.fail(w, err, "upload-start", body.Title)
 		return

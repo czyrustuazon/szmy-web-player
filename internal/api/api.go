@@ -476,6 +476,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		Title: tags.Title, Artist: tags.Artist, Album: tags.Album, Genre: tags.Genre,
 		Year: tags.Year, Track: tags.Track, HasArt: len(tags.Art) > 0,
 		SampleRate: tags.SampleRate, Loop: tags.Loop, Fav: s.Store.IsFavorite(clean),
+		Plays: s.Store.Plays(clean),
 	}
 	if !resp.HasArt {
 		_, resp.HasArt = s.Lib.FolderArt(clean)

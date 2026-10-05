@@ -99,9 +99,12 @@ for (const [archive, title] of [['album.zip', 'Zip Album'], ['album.7z', '7z Alb
   const dir = path.join(MUSIC, 'uploads', title);
   const names = walk(dir).map((p) => path.relative(dir, p)).sort();
   check(JSON.stringify(names) === JSON.stringify(['01.mp3', '02.mp3', 'CD2/03.mp3', 'cover.jpg']), `${archive}: the audio files and the real cover picture, wrapper folder removed (${names.join(', ')})`);
-  check(r.images === 1 && r.skipped === 4, `${archive}: one picture kept, four files skipped (${r.images}, ${r.skipped})`);
+  // The 7z extractor materialises the symlink (and it is dropped); the zip reader never writes one.
+  const wantTypes = archive.endsWith('.7z') ? { txt: 1, sh: 1, png: 1, mp3: 1 } : { txt: 1, sh: 1, png: 1 };
+  const wantSkipped = Object.values(wantTypes).reduce((a, b) => a + b, 0);
+  check(r.images === 1 && r.skipped === wantSkipped, `${archive}: one picture kept, ${wantSkipped} files skipped (${r.images}, ${r.skipped})`);
   const types = r.skippedTypes || {};
-  check(types.txt === 1 && types.sh === 1 && types.png === 1 && types.mp3 === 1, `${archive}: skipped files are broken down by type (${JSON.stringify(types)})`);
+  check(JSON.stringify(Object.entries(types).sort()) === JSON.stringify(Object.entries(wantTypes).sort()), `${archive}: skipped files are broken down by type (${JSON.stringify(types)})`);
   check(r.hasReport === true, `${archive}: a report of the skipped files was saved`);
   const report = await fetch(`${BASE}/api/upload/report?relPath=${encodeURIComponent(r.path)}&filename=${encodeURIComponent(archive)}`);
   const reportText = await report.text();

@@ -252,14 +252,14 @@ export function createUploader({
     // Uploads files (in order) into one folder named `title` ("" = the upload folder itself).
     // Resolves with one result per file; rejects only when the connection is truly gone, leaving
     // the pending record so that choosing the same files again resumes.
-    async uploadBatch(files, { title = '', onProgress = () => {}, onStatus = () => {} } = {}) {
+    async uploadBatch(files, { title = '', merge = false, onProgress = () => {}, onStatus = () => {} } = {}) {
       const total = files.reduce((n, f) => n + f.size, 0) || 1;
       const sig = batchSignature(files);
       let rec = store.load();
-      if (!rec || rec.sig !== sig || rec.title !== title) {
+      if (!rec || rec.sig !== sig || rec.title !== title || !!rec.merge !== !!merge) {
         onStatus('Starting…');
-        const { relPath } = await transport.json('POST', '/api/upload/start', { title });
-        rec = { sig, title, relPath, names: files.map((f) => f.name) };
+        const { relPath } = await transport.json('POST', '/api/upload/start', merge ? { title, merge: true } : { title });
+        rec = { sig, title, merge, relPath, names: files.map((f) => f.name) };
         store.save(rec); // a reload mid-batch reuses this folder instead of minting another
       }
 

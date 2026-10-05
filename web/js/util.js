@@ -49,11 +49,15 @@ export function toast(message, { action, onAction, ms = 3500 } = {}) {
 
 // Scroll long titles horizontally when they overflow, like szmy's tag ticker.
 export function setMarquee(el, text) {
-  el.textContent = text;
+  el.textContent = '';
+  const inner = document.createElement('span');
+  inner.className = 'ticker-in';
+  inner.textContent = text;
+  el.append(inner);
   el.classList.remove('marquee');
   el.style.removeProperty('--shift');
   requestAnimationFrame(() => {
-    const overflow = el.scrollWidth - el.clientWidth;
+    const overflow = inner.offsetWidth - el.clientWidth;
     if (overflow > 4) {
       el.style.setProperty('--shift', `-${overflow + 16}px`);
       el.style.setProperty('--dur', `${Math.max(6, overflow / 25)}s`);

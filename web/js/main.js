@@ -341,7 +341,21 @@ function guarded(fn) {
   };
 }
 
-player.addEventListener('ended', () => advance(true));
+player.addEventListener('ended', () => {
+  const t = queue.current();
+  if (t) {
+    api
+      .played(t.path)
+      .then((r) => {
+        if (state.meta?.path === t.path) {
+          state.meta.plays = r.plays;
+          renderPlays();
+        }
+      })
+      .catch(() => {}); // counting is best-effort
+  }
+  advance(true);
+});
 player.addEventListener('error', (ev) => {
   const t = queue.current();
   if (t) onTrackFailed(t, ev.detail.message);
@@ -477,13 +491,22 @@ function showNowPlaying(meta) {
   $('#mp-sub').textContent = sub || kindLabel(meta.kind, meta.path, '');
   setMarquee($('#fp-title'), meta.title);
   $('#fp-artist').textContent = sub || kindLabel(meta.kind, meta.path, '');
-  $('#fp-meta').textContent = [meta.genre, meta.year, meta.track && `#${meta.track}`].filter(Boolean).join(' · ');
+  renderPlays();
   renderFavButton();
   renderLoopBadge();
   document.title = `${meta.title} – Master Music Player`;
   updateMediaSession(meta);
   list.refresh();
   renderTime();
+}
+
+// Genre, year, track number and how often this track has been listened to through.
+function renderPlays() {
+  const m = state.meta;
+  if (!m) return;
+  const n = m.plays || 0;
+  const plays = n ? `Played ${n} time${n === 1 ? '' : 's'}` : 'Not played yet';
+  $('#fp-meta').textContent = [m.genre, m.year, m.track && `#${m.track}`, plays].filter(Boolean).join(' · ');
 }
 
 function renderLoopBadge() {

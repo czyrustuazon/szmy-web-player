@@ -81,3 +81,12 @@ func TestWAVSeekFailuresStopTheScan(t *testing.T) {
 		t.Fatalf("pad byte: %v", err)
 	}
 }
+
+func TestTitleFromNameDecodesSambaEscapes(t *testing.T) {
+	if got := titleFromName("/a/G STAGE #U3010#U30ed.opus"); got != "G STAGE 【ロ" {
+		t.Errorf("got %q", got)
+	}
+	if got := titleFromName("/a/#UZZZZ.opus"); got != "#UZZZZ" {
+		t.Errorf("invalid escape changed: %q", got)
+	}
+}

@@ -36,10 +36,17 @@ export function reportUrl(r) {
 // One line of the results list for a finished file.
 export function describeResult(r) {
   if (r.state === 'done') {
+    const parts = [];
+    if (r.duplicates > 0) {
+      const dup = `${r.duplicates} already in the library`;
+      if (!r.tracks) return r.skipped > 0 ? `Nothing new: ${dup}, ${r.skipped} other file${r.skipped === 1 ? '' : 's'} skipped` : `Nothing new: ${dup}`;
+      parts.push(dup);
+    }
     if (r.skipped !== undefined && r.skipped > 0) {
       const what = describeTypes(r.skippedTypes);
-      return `${r.tracks} track${r.tracks === 1 ? '' : 's'} added, ${r.skipped} other file${r.skipped === 1 ? '' : 's'} skipped${what ? ` (${what})` : ''}`;
+      parts.push(`${r.skipped} other file${r.skipped === 1 ? '' : 's'} skipped${what ? ` (${what})` : ''}`);
     }
+    if (parts.length) return `${r.tracks} track${r.tracks === 1 ? '' : 's'} added, ${parts.join(', ')}`;
     return r.tracks > 1 ? `${r.tracks} tracks added` : 'Added to the library';
   }
   return r.error || 'Upload failed';
@@ -48,9 +55,10 @@ export function describeResult(r) {
 export function summarize(results) {
   const ok = results.filter((r) => r.state === 'done');
   const tracks = ok.reduce((n, r) => n + (r.tracks || 0), 0);
+  const dups = ok.reduce((n, r) => n + (r.duplicates || 0), 0);
   const bad = results.length - ok.length;
   if (!ok.length) return { tracks: 0, bad, text: `Nothing was added (${bad} file${bad === 1 ? '' : 's'} failed)` };
-  const base = `Added ${tracks} track${tracks === 1 ? '' : 's'}`;
+  const base = tracks || !dups ? `Added ${tracks} track${tracks === 1 ? '' : 's'}${dups ? `, ${dups} already there` : ''}` : `Nothing new: ${dups} already in the library`;
   return { tracks, bad, text: bad ? `${base}; ${bad} failed` : base };
 }
 
@@ -59,6 +67,7 @@ export function initUploadView({ caps, onUploaded, goLibrary, uploader = createU
     drop: $('#up-drop'),
     input: $('#up-input'),
     folder: $('#up-folder'),
+    merge: $('#up-merge'),
     files: $('#up-files'),
     start: $('#up-start'),
     clear: $('#up-clear'),
@@ -79,6 +88,7 @@ export function initUploadView({ caps, onUploaded, goLibrary, uploader = createU
   el.disabled.hidden = enabled;
   el.drop.disabled = !enabled;
   el.folder.disabled = !enabled;
+  el.merge.disabled = !enabled;
 
   function setStatus(text) {
     el.status.textContent = text;
@@ -164,6 +174,7 @@ export function initUploadView({ caps, onUploaded, goLibrary, uploader = createU
     try {
       const results = await uploader.uploadBatch(queue, {
         title,
+        merge: el.merge.checked && title !== '',
         onStatus: setStatus,
         onProgress: (p) => {
           el.bar.style.width = `${Math.round(p.fraction * 100)}%`;

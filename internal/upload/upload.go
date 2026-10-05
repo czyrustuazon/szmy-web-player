@@ -23,6 +23,7 @@
 package upload
 
 import (
+	"bytes"
 	"archive/zip"
 	"context"
 	"crypto/sha256"
@@ -113,6 +114,7 @@ type Status struct {
 	ResumeOffset int64  `json:"resumeOffset,omitempty"`
 	Tracks       int    `json:"tracks,omitempty"`  // audio files added
 	Images       int    `json:"images,omitempty"`  // cover images kept (they become cover art)
+	Duplicates   int    `json:"duplicates,omitempty"` // files that were already in the folder, identical, and so not added again
 	Skipped      int    `json:"skipped,omitempty"` // other files dropped from an archive
 	Path         string `json:"path,omitempty"`    // library path of the file or folder that was added
 
@@ -325,6 +327,20 @@ func (m *Manager) Start(title string) (name, relPath string, err error) {
 	}
 	name = filepath.Base(dest)
 	return name, m.uploadRel + "/" + name, nil
+}
+
+// StartOrJoin is Start, except that a folder of that name which already exists is reused instead of
+// a "(2)" one being made, so a later upload can add to an album already in the library. What is
+// already there is never overwritten: see merge.
+func (m *Manager) StartOrJoin(title string) (name, relPath string, err error) {
+	if strings.TrimSpace(title) != "" {
+		dest := filepath.Join(m.root, filepath.FromSlash(m.uploadRel), SanitizeFolderName(title))
+		if st, err := os.Lstat(dest); err == nil && st.IsDir() { // a real folder, not a link
+			name = filepath.Base(dest)
+			return name, m.uploadRel + "/" + name, nil
+		}
+	}
+	return m.Start(title)
 }
 
 // --- sessions ---
@@ -580,12 +596,104 @@ func (m *Manager) placeLoose(clean, destDir, stagingPath, metaPath, filename str
 	if name == "" {
 		name = "track"
 	}
+	if sameContent(stagingPath, filepath.Join(destDir, name)) {
+		discard(stagingPath, metaPath)
+		return Status{State: Done, BytesWritten: size, TotalBytes: size, Duplicates: 1, Path: clean + "/" + name}
+	}
 	target := uniqueFile(destDir, name)
 	if err := m.move(stagingPath, target); err != nil {
 		return Status{State: Failed, TotalBytes: size, Error: fmt.Sprintf("placing %s: %v", filename, err)}
 	}
 	os.Remove(metaPath)
 	return Status{State: Done, BytesWritten: size, TotalBytes: size, Tracks: 1, Path: clean + "/" + filepath.Base(target)}
+}
+
+type mergeStats struct{ Tracks, Images, Duplicates int }
+
+// tally counts what is at path (a file, or everything below a folder) as added, or as
+// duplicates when dup is set.
+func (s *mergeStats) tally(path string, dup bool) {
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil || d.IsDir():
+		case dup:
+			s.Duplicates++
+		case isAudio(p):
+			s.Tracks++
+		default:
+			s.Images++ // prune left nothing but audio and pictures
+		}
+		return nil
+	})
+}
+
+// sameContent is true when both are regular files with identical bytes.
+func sameContent(a, b string) bool {
+	sa, err := os.Stat(a)
+	if err != nil || !sa.Mode().IsRegular() {
+		return false
+	}
+	sb, err := os.Stat(b)
+	if err != nil || !sb.Mode().IsRegular() || sa.Size() != sb.Size() {
+		return false
+	}
+	fa, err := os.Open(a)
+	if err != nil {
+		return false
+	}
+	defer fa.Close()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false
+	}
+	defer fb.Close()
+	bufA, bufB := make([]byte, 64<<10), make([]byte, 64<<10)
+	for {
+		na, errA := io.ReadFull(fa, bufA)
+		nb, errB := io.ReadFull(fb, bufB)
+		if na != nb || !bytes.Equal(bufA[:na], bufB[:nb]) {
+			return false
+		}
+		if errA != nil || errB != nil {
+			return errA == errB // both ended together, or one read failed
+		}
+	}
+}
+
+// merge moves everything in src into dst without ever overwriting: a folder that already exists
+// is merged into; a file that already exists with identical bytes is dropped as a duplicate
+// (nothing new to add); a file or folder that clashes with something different is kept next to
+// it under a numbered name; anything else is moved in whole.
+func (m *Manager) merge(src, dst string, st *mergeStats) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		from, to := filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())
+		existing, statErr := os.Lstat(to)
+		switch {
+		case statErr != nil:
+		case e.IsDir() && existing.IsDir():
+			if err := m.merge(from, to, st); err != nil {
+				return err
+			}
+			continue
+		case !e.IsDir() && sameContent(from, to):
+			st.tally(from, true)
+			os.Remove(from)
+			continue
+		case e.IsDir():
+			to = UniqueDestination(dst, e.Name())
+		default:
+			to = uniqueFile(dst, e.Name())
+		}
+		st.tally(from, false)
+		if err := m.rename(from, to); err != nil {
+			return fmt.Errorf("adding %s to the library: %v", e.Name(), err)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) extractDir(destDir, key string) string {
@@ -635,20 +743,14 @@ func (m *Manager) runArchive(key, clean, destDir, stagingPath, metaPath string, 
 		return
 	}
 	flattenWrapper(tmp)
-	entries, _ := os.ReadDir(tmp) // tmp was just walked; an unreadable tmp would have failed above
-	for _, e := range entries {
-		target := uniqueFile(destDir, e.Name())
-		if e.IsDir() {
-			target = UniqueDestination(destDir, e.Name())
-		}
-		if err := m.rename(filepath.Join(tmp, e.Name()), target); err != nil {
-			fail("adding %s to the library: %v", e.Name(), err)
-			return
-		}
+	var added mergeStats
+	if err := m.merge(tmp, destDir, &added); err != nil {
+		fail("%v", err)
+		return
 	}
 
 	discard(stagingPath, metaPath)
-	done := Status{State: Done, BytesWritten: size, TotalBytes: size, Tracks: pr.Tracks, Images: pr.Images, Skipped: len(pr.Skipped), Path: clean}
+	done := Status{State: Done, BytesWritten: size, TotalBytes: size, Tracks: added.Tracks, Images: added.Images, Duplicates: added.Duplicates, Skipped: len(pr.Skipped), Path: clean}
 	if len(pr.Skipped) > 0 {
 		done.SkippedTypes = countTypes(pr.Skipped)
 		done.HasReport = m.writeReport(m.sessionKey(clean, meta.Filename), meta.Filename, pr.Skipped) == nil
