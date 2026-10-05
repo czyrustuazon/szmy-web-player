@@ -423,6 +423,114 @@ func TestTailscaleWhoisErrors(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------- behind a proxy or tunnel
+
+func tunnelPolicy(t *testing.T, proxies, visitors string) (*Policy, *[]string) {
+	t.Helper()
+	p, logs := policy(t, "tailscale,lan", nil, nil)
+	pn, err := ParseNets(proxies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vn, err := ParseNets(visitors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.TrustProxies(pn, vn)
+	return p, logs
+}
+
+func request(remote string, headers map[string]string) *http.Request {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = remote
+	for k, v := range headers {
+		r.Header.Add(k, v)
+	}
+	return r
+}
+
+func TestForwarded(t *testing.T) {
+	for _, k := range []string{"CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP", "Forwarded"} {
+		if !Forwarded(http.Header{http.CanonicalHeaderKey(k): {"203.0.113.7"}}) {
+			t.Errorf("%s marks a proxied request", k)
+		}
+	}
+	if Forwarded(http.Header{"User-Agent": {"x"}}) {
+		t.Error("a plain request is not proxied")
+	}
+}
+
+func TestTunnelVisitorsAreJudgedByTheirOwnAddress(t *testing.T) {
+	// cloudflared on this host: every visitor arrives as loopback (or the Docker gateway).
+	p, _ := tunnelPolicy(t, "loopback,lan", "tailscale,lan,198.51.100.0/24")
+	cases := []struct {
+		remote  string
+		headers map[string]string
+		want    bool
+		who     string
+	}{
+		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.7"}, false, "203.0.113.7"}, // the internet, via the tunnel
+		{"172.17.0.1:5000", map[string]string{"CF-Connecting-IP": "203.0.113.7"}, false, "203.0.113.7"}, // via the Docker gateway
+		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "198.51.100.20"}, true, "198.51.100.20"},
+		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "2001:db8::1"}, false, "2001:db8::1"},
+		// The last X-Forwarded-For entry is the one the proxy added; earlier ones are the visitor's own claims.
+		{"127.0.0.1:5000", map[string]string{"X-Forwarded-For": "192.168.1.5, 203.0.113.7"}, false, "203.0.113.7"},
+		{"127.0.0.1:5000", map[string]string{"X-Forwarded-For": "203.0.113.7, 198.51.100.9"}, true, "198.51.100.9"},
+		{"127.0.0.1:5000", map[string]string{"X-Real-IP": "198.51.100.9"}, true, "198.51.100.9"},
+		// Fail closed when the proxy says nothing readable about the visitor.
+		{"127.0.0.1:5000", map[string]string{"Forwarded": "for=unknown"}, false, "127.0.0.1:5000"},
+		{"127.0.0.1:5000", map[string]string{"CF-Connecting-IP": "garbage"}, false, "127.0.0.1:5000"},
+		// No forwarding header: a local health check or local use, judged as before.
+		{"127.0.0.1:5000", nil, true, "127.0.0.1:5000"},
+		// Headers from an address that is not a trusted proxy are ignored, as before.
+		{"203.0.113.7:1", map[string]string{"CF-Connecting-IP": "192.168.1.5"}, false, "203.0.113.7:1"},
+		{"100.114.200.30:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"}, true, "100.114.200.30:1"},
+	}
+	for _, c := range cases {
+		ok, why, who := p.Check(request(c.remote, c.headers))
+		if ok != c.want || who != c.who {
+			t.Errorf("%s %v: ok=%v who=%q (%s), want %v %q", c.remote, c.headers, ok, who, why, c.want, c.who)
+		}
+	}
+	if _, why, _ := p.Check(request("127.0.0.1:1", map[string]string{"X-Real-IP": "203.0.113.7"})); !strings.Contains(why, "tunnel networks") {
+		t.Errorf("why: %q", why)
+	}
+	if _, why, _ := p.Check(request("127.0.0.1:1", map[string]string{"Forwarded": "for=x"})); !strings.Contains(why, "readable") {
+		t.Errorf("why: %q", why)
+	}
+}
+
+func TestTunnelVisitorsDefaultToAnywhere(t *testing.T) {
+	// The default (MP_TUNNEL_NETS=any) keeps a Google-sign-in tunnel reachable from anywhere.
+	p, _ := tunnelPolicy(t, "loopback,lan", "any")
+	if ok, why, _ := p.Check(request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"})); !ok {
+		t.Error(why)
+	}
+}
+
+func TestWithoutTrustedProxiesHeadersAreNeverRead(t *testing.T) {
+	p, _ := policy(t, "tailscale,lan", nil, nil)
+	if ok, _, who := p.Check(request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"})); !ok || who != "127.0.0.1:1" {
+		t.Errorf("no proxies configured: judged by the peer address (%v %s)", ok, who)
+	}
+}
+
+func TestMiddlewareLogsTheTunnelVisitor(t *testing.T) {
+	p, logs := tunnelPolicy(t, "loopback", "tailscale")
+	h := p.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, request("127.0.0.1:1", map[string]string{"CF-Connecting-IP": "203.0.113.7"}))
+	if rec.Code != 403 {
+		t.Errorf("code %d", rec.Code)
+	}
+	if len(*logs) != 1 || !strings.Contains((*logs)[0], "203.0.113.7") {
+		t.Errorf("the refusal names the visitor, not the tunnel: %v", *logs)
+	}
+	if d := p.Describe(); !strings.Contains(d, "proxy or tunnel") {
+		t.Errorf("%q", d)
+	}
+}
+
 func TestClientKey(t *testing.T) {
 	p, _ := tunnelPolicy(t, "loopback", "any")
 	var got string
