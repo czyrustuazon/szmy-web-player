@@ -7,7 +7,8 @@ ARG TARGETARCH
 WORKDIR /src
 COPY go.mod ./
 COPY . .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w" -o /out/masterplayer ./cmd/masterplayer
 
 # `docker build --target test .` runs vet, the Go tests and the coverage gate.
@@ -15,7 +16,8 @@ FROM golang:1.22-bookworm AS test
 ARG COVER_MIN=100
 WORKDIR /src
 COPY . .
-RUN go vet ./... && COVER_MIN="${COVER_MIN}" sh scripts/coverage.sh
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go vet ./... && COVER_MIN="${COVER_MIN}" sh scripts/coverage.sh
 
 # ---- vgmstream-cli: prebuilt static binary from the official release ----
 # Upstream only publishes x86-64 Linux builds. On other architectures the image still
