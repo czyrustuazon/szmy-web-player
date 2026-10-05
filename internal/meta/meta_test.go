@@ -507,7 +507,7 @@ func TestVorbisCommentErrors(t *testing.T) {
 	cases := map[string][]byte{
 		"short":         {1},
 		"vendor":        append(le32(50), 'x'),
-		"count":         append(le32(0)),
+		"count":         le32(0),
 		"entry length":  append(append(le32(0), le32(1)...), 1, 2),
 		"entry payload": append(append(append(le32(0), le32(1)...), le32(20)...), 'a'),
 	}

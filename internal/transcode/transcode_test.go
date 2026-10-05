@@ -34,6 +34,31 @@ func TestParseMetadata(t *testing.T) {
 	}
 }
 
+// Captured from `vgmstream-cli -m` (r2117) on a WAV with an smpl loop chunk.
+const realVgmstreamOutput = `metadata for /t/loop.wav
+sample rate: 8000 Hz
+channels: 1
+loop start: 2000 samples (0:00.250 seconds)
+loop end: 6000 samples (0:00.750 seconds)
+stream total samples: 8000 (0:01.000 seconds)
+encoding: 16-bit Little Endian PCM
+layout: interleave
+metadata from: RIFF WAVE header (smpl looping)
+bitrate: 128 kbps
+play duration: 90000 samples (0:11.250 seconds)
+`
+
+func TestParseMetadataRealVgmstreamOutput(t *testing.T) {
+	in, err := ParseMetadata(realVgmstreamOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Info{SampleRate: 8000, Channels: 1, TotalSamples: 8000, LoopStart: 2000, LoopEnd: 6000, HasLoop: true}
+	if in != want {
+		t.Fatalf("got %+v want %+v", in, want)
+	}
+}
+
 func TestParseMetadataWithoutLoopOrName(t *testing.T) {
 	in, err := ParseMetadata("sample rate: 44100 Hz\nchannels: 1\nstream total samples: 100 (0:00.00)\n")
 	if err != nil || in.HasLoop || in.Title != "" || in.Channels != 1 || in.TotalSamples != 100 {
