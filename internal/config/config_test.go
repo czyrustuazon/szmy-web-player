@@ -17,7 +17,10 @@ func TestLoadDefaults(t *testing.T) {
 	if c.Port != 8080 || c.MusicDir != "./music" || c.DataDir != "./data" || c.UploadSubdir != "uploads" {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
-	if c.MaxUploadMB != 512 || c.TranscodeWorkers != 2 || c.TrashMinutes != 10 || c.VgmstreamBin != "vgmstream-cli" {
+	if c.MaxUploadMB != 61440 || c.MinFreeMB != 1024 || c.UploadTTLHours != 48 {
+		t.Fatalf("unexpected upload defaults: %+v", c)
+	}
+	if c.TranscodeWorkers != 2 || c.TrashMinutes != 10 || c.VgmstreamBin != "vgmstream-cli" {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
 	if !c.AuthDisabled || c.CookieSecure || c.ReadOnly || c.AdminPassword != "" {
@@ -66,6 +69,8 @@ func TestLoadErrors(t *testing.T) {
 		"port range":      {"MP_PORT": "70000"},
 		"port zero":       {"MP_PORT": "0"},
 		"upload size":     {"MP_MAX_UPLOAD_MB": "0"},
+		"min free":        {"MP_MIN_FREE_MB": "-1"},
+		"upload ttl":      {"MP_UPLOAD_TTL_HOURS": "0"},
 		"workers":         {"MP_TRANSCODE_WORKERS": "0"},
 		"trash minutes":   {"MP_TRASH_MINUTES": "0"},
 		"subdir parent":   {"MP_UPLOAD_SUBDIR": "../x"},

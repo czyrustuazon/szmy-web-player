@@ -1,7 +1,7 @@
 // Minimal service worker: makes the app installable and keeps the shell
 // available offline. API traffic (audio, art, JSON) is never cached.
-const SHELL = 'mmp-shell-v1';
-const FILES = ['/', '/style.css', '/icon.svg', '/generic.svg', '/js/main.js', '/js/api.js', '/js/player.js', '/js/queue.js', '/js/viz.js', '/js/ui.js', '/js/util.js'];
+const SHELL = 'mmp-shell-v2';
+const FILES = ['/', '/style.css', '/icon.svg', '/generic.svg', '/js/main.js', '/js/api.js', '/js/player.js', '/js/queue.js', '/js/viz.js', '/js/ui.js', '/js/util.js', '/js/uploader.js', '/js/uploadview.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

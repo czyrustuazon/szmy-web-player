@@ -51,29 +51,4 @@ export const api = {
   errors: () => request('GET', '/api/errors'),
   streamURL: (p, transcode = false) => `/api/stream?${q(transcode ? { p, transcode: '1' } : { p })}`,
   artURL: (p) => `/api/art?${q({ p })}`,
-
-  // XHR (not fetch) so we get upload progress.
-  upload(files, dir, onProgress) {
-    return new Promise((resolve, reject) => {
-      const form = new FormData();
-      for (const f of files) form.append('files', f, f.name);
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `/api/upload${dir ? `?${q({ dir })}` : ''}`);
-      xhr.setRequestHeader('X-Requested-With', 'masterplayer');
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
-      xhr.onerror = () => reject(new ApiError(0, 'network error'));
-      xhr.onload = () => {
-        let data = null;
-        try {
-          data = JSON.parse(xhr.responseText);
-        } catch {
-          /* ignore */
-        }
-        if (xhr.status === 401) events.dispatchEvent(new Event('unauthorized'));
-        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
-        else reject(new ApiError(xhr.status, data?.error || xhr.statusText));
-      };
-      xhr.send(form);
-    });
-  },
 };

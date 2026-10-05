@@ -231,7 +231,7 @@ func TestMoveFileCopyFallback(t *testing.T) {
 
 	src, dst := filepath.Join(dir, "a.bin"), filepath.Join(dir, "b.bin")
 	mustWrite(t, src, []byte("payload"))
-	if err := moveFile(src, dst); err != nil {
+	if err := MoveFile(src, dst); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ := os.ReadFile(dst); string(data) != "payload" {
@@ -247,22 +247,10 @@ func TestMoveFileCopyFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	failed := filepath.Join(dir, "never.bin")
-	if err := moveFile(dirSrc, failed); err == nil {
+	if err := MoveFile(dirSrc, failed); err == nil {
 		t.Error("copying a directory must fail")
 	}
 	if _, err := os.Stat(failed); err == nil {
 		t.Error("partial destination must be cleaned up")
-	}
-}
-
-func TestSaveFileRenameFailureCleansUp(t *testing.T) {
-	l, root := writableLib(t)
-	swapRename(t, func(string, string) error { return errors.New("disk on fire") })
-	if _, _, err := l.SaveFile("uploads", "a.mp3", strings.NewReader(string(mp3)), 1<<20); err == nil {
-		t.Fatal("expected an error")
-	}
-	es, _ := os.ReadDir(filepath.Join(root, "uploads"))
-	if len(es) != 0 {
-		t.Errorf("temp file left behind: %v", es)
 	}
 }

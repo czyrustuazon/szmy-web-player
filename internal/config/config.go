@@ -17,7 +17,9 @@ type Config struct {
 	UploadSubdir     string // relative to MusicDir, slash separated
 	AdminPassword    string
 	AuthDisabled     bool // derived: true when AdminPassword is blank
-	MaxUploadMB      int64
+	MaxUploadMB      int64 // largest single upload (and extracted archive), in MB
+	MinFreeMB        int64 // free space that must remain after an upload, in MB (0 = no check)
+	UploadTTLHours   int   // abandoned upload sessions are purged after this many hours
 	CacheMB          int64
 	VgmstreamBin     string
 	TranscodeWorkers int
@@ -60,7 +62,9 @@ func Load(getenv func(string) string) (Config, error) {
 		DataDir:          str("MP_DATA_DIR", "./data"),
 		UploadSubdir:     str("MP_UPLOAD_SUBDIR", "uploads"),
 		AdminPassword:    getenv("MP_ADMIN_PASSWORD"),
-		MaxUploadMB:     num("MP_MAX_UPLOAD_MB", 512),
+		MaxUploadMB:     num("MP_MAX_UPLOAD_MB", 61440), // 60 GiB, like anime-db-stream
+		MinFreeMB:       num("MP_MIN_FREE_MB", 1024),
+		UploadTTLHours:  int(num("MP_UPLOAD_TTL_HOURS", 48)),
 		CacheMB:          num("MP_CACHE_MB", 2048),
 		VgmstreamBin:     str("MP_VGMSTREAM_BIN", "vgmstream-cli"),
 		TranscodeWorkers: int(num("MP_TRANSCODE_WORKERS", 2)),
@@ -79,6 +83,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if c.MaxUploadMB < 1 {
 		return Config{}, fmt.Errorf("MP_MAX_UPLOAD_MB must be at least 1")
+	}
+	if c.MinFreeMB < 0 {
+		return Config{}, fmt.Errorf("MP_MIN_FREE_MB must not be negative")
+	}
+	if c.UploadTTLHours < 1 {
+		return Config{}, fmt.Errorf("MP_UPLOAD_TTL_HOURS must be at least 1")
 	}
 	if c.TranscodeWorkers < 1 {
 		return Config{}, fmt.Errorf("MP_TRANSCODE_WORKERS must be at least 1")

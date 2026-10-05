@@ -49,16 +49,75 @@
   <header class="top">
     <button id="btn-back" class="ib" aria-label="Back" hidden><svg class="ic"><use href="#i-back"/></svg></button>
     <div class="ttl">
-      <h1 id="title">Library</h1>
+      <h1 id="title">Now Playing</h1>
       <div id="crumbs" class="sub"></div>
     </div>
-    <button id="btn-locate" class="ib" aria-label="Go to playing track"><svg class="ic"><use href="#i-locate"/></svg></button>
-    <button id="btn-upload" class="ib" aria-label="Upload" hidden><svg class="ic"><use href="#i-upload"/></svg></button>
+    <button id="btn-locate" class="ib" aria-label="Go to playing track" hidden><svg class="ic"><use href="#i-locate"/></svg></button>
     <button id="btn-settings" class="ib" aria-label="Settings"><svg class="ic"><use href="#i-settings"/></svg></button>
   </header>
 
-  <main id="list" class="list"></main>
-  <p id="empty" class="empty" hidden>No favorites yet. Tap the heart on a track.</p>
+  <main id="list" class="list" hidden></main>
+  <p id="empty" class="empty" hidden></p>
+
+  <section id="view-player" class="view" aria-label="Now playing">
+    <div class="fp-art">
+      <img id="fp-art" alt="Cover art" src="/generic.svg">
+      <canvas id="fp-canvas" aria-label="Visualizer (tap to switch)"></canvas>
+    </div>
+    <div class="fp-info">
+      <div id="fp-title" class="ticker big-title" role="button" tabindex="0">Nothing playing</div>
+      <div id="fp-artist" class="sub"></div>
+      <div id="fp-meta" class="sub dim"></div>
+      <div id="fp-loop" class="badge" hidden></div>
+    </div>
+    <div id="np-empty" class="np-empty" hidden>
+      <p>Pick a track from your library, or add some music to get started.</p>
+      <div class="row-btns">
+        <button id="np-browse" class="primary" type="button">Open library</button>
+        <button id="np-upload" class="secondary" type="button">Upload music</button>
+      </div>
+    </div>
+    <div class="seekrow">
+      <span id="fp-cur" class="time">0:00</span>
+      <input id="fp-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
+      <span id="fp-dur" class="time">0:00</span>
+    </div>
+    <div class="controls">
+      <button id="fp-shuffle" class="ib" aria-label="Shuffle"><svg class="ic"><use href="#i-shuffle"/></svg></button>
+      <button id="fp-prev" class="ib" aria-label="Previous"><svg class="ic"><use href="#i-prev"/></svg></button>
+      <button id="fp-play" class="ib play" aria-label="Play or pause"></button>
+      <button id="fp-next" class="ib" aria-label="Next"><svg class="ic"><use href="#i-next"/></svg></button>
+      <button id="fp-repeat" class="ib rep" data-mode="off" aria-label="Repeat"><svg class="ic"><use href="#i-repeat"/></svg></button>
+    </div>
+    <div class="controls second">
+      <button id="fp-fav" class="ib fav" aria-label="Favorite"></button>
+      <input id="fp-vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+      <button id="fp-del" class="ib del" aria-label="Delete track"><svg class="ic"><use href="#i-trash"/></svg></button>
+    </div>
+  </section>
+
+  <section id="view-upload" class="view" hidden aria-label="Upload music">
+    <p id="up-disabled" class="notice" hidden>This library is read-only, so uploading is turned off.</p>
+    <p class="sub">Add audio files or <b>.zip</b> / <b>.7z</b> archives. Large files are sent in pieces, and an interrupted upload picks up where it stopped.</p>
+    <button id="up-drop" class="drop" type="button">
+      <svg class="ic"><use href="#i-upload"/></svg>
+      <span>Tap to choose files, or drop them here</span>
+    </button>
+    <input id="up-input" type="file" multiple hidden>
+    <label class="field">Folder name <span class="sub">(optional)</span>
+      <input id="up-folder" type="text" maxlength="120" placeholder="Album or collection name" autocomplete="off">
+    </label>
+    <p id="up-7z" class="notice" hidden>This server cannot unpack .7z archives (7z is not installed there). Use a .zip instead.</p>
+    <p id="up-resume" class="notice" hidden></p>
+    <ul id="up-files" class="files"></ul>
+    <div class="row-btns">
+      <button id="up-start" class="primary" type="button" disabled>Upload</button>
+      <button id="up-clear" class="secondary" type="button" disabled>Clear</button>
+    </div>
+    <div id="up-progress" class="progress" hidden><div id="up-bar" class="progress-fill"></div></div>
+    <p id="up-status" class="sub" role="status"></p>
+    <ul id="up-results" class="files results"></ul>
+  </section>
 
   <div id="mini" class="mini" hidden>
     <div id="mp-bar" class="mini-bar"></div>
@@ -71,45 +130,12 @@
   </div>
 
   <nav class="tabs">
-    <button class="tab active" data-source="library"><svg class="ic"><use href="#i-folder"/></svg>Library</button>
-    <button class="tab" data-source="favorites"><svg class="ic"><use href="#i-heart"/></svg>Favorites</button>
+    <button class="tab active" data-view="player"><svg class="ic"><use href="#i-music"/></svg>Player</button>
+    <button class="tab" data-view="library"><svg class="ic"><use href="#i-folder"/></svg>Library</button>
+    <button class="tab" data-view="favorites"><svg class="ic"><use href="#i-heart"/></svg>Favorites</button>
+    <button class="tab" data-view="upload"><svg class="ic"><use href="#i-upload"/></svg>Upload</button>
   </nav>
 </div>
-
-<section id="full" class="sheet" hidden aria-label="Now playing">
-  <div id="fp-handle" class="fp-top">
-    <button id="fp-close" class="ib" aria-label="Close player"><svg class="ic"><use href="#i-down"/></svg></button>
-    <span class="grip"></span>
-    <span class="sp"></span>
-  </div>
-  <div class="fp-art">
-    <img id="fp-art" alt="Cover art">
-    <canvas id="fp-canvas" aria-label="Visualizer (tap to switch)"></canvas>
-  </div>
-  <div class="fp-info">
-    <div id="fp-title" class="ticker big-title" role="button" tabindex="0"></div>
-    <div id="fp-artist" class="sub"></div>
-    <div id="fp-meta" class="sub dim"></div>
-    <div id="fp-loop" class="badge" hidden></div>
-  </div>
-  <div class="seekrow">
-    <span id="fp-cur" class="time">0:00</span>
-    <input id="fp-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
-    <span id="fp-dur" class="time">0:00</span>
-  </div>
-  <div class="controls">
-    <button id="fp-shuffle" class="ib" aria-label="Shuffle"><svg class="ic"><use href="#i-shuffle"/></svg></button>
-    <button id="fp-prev" class="ib" aria-label="Previous"><svg class="ic"><use href="#i-prev"/></svg></button>
-    <button id="fp-play" class="ib play" aria-label="Play or pause"></button>
-    <button id="fp-next" class="ib" aria-label="Next"><svg class="ic"><use href="#i-next"/></svg></button>
-    <button id="fp-repeat" class="ib rep" data-mode="off" aria-label="Repeat"><svg class="ic"><use href="#i-repeat"/></svg></button>
-  </div>
-  <div class="controls second">
-    <button id="fp-fav" class="ib fav" aria-label="Favorite"></button>
-    <input id="fp-vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
-    <button id="fp-del" class="ib del" aria-label="Delete track"><svg class="ic"><use href="#i-trash"/></svg></button>
-  </div>
-</section>
 
 <section id="settings" class="sheet" hidden aria-label="Settings">
   <div class="fp-top">
@@ -136,7 +162,6 @@
   </div>
 </section>
 
-<input id="file-input" type="file" multiple hidden>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script type="module" src="/js/main.js"></script>

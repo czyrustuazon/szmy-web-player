@@ -4,7 +4,6 @@
 package library
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -29,9 +28,7 @@ var (
 	ErrNotAudio = errors.New("not an audio file")
 	ErrNotFile  = errors.New("not a regular file")
 	ErrExists   = errors.New("destination already exists")
-	ErrTooLarge = errors.New("file too large")
 	ErrBadToken = errors.New("invalid undo token")
-	ErrBadName  = errors.New("invalid file name")
 )
 
 const maxDepth = 32
@@ -101,6 +98,9 @@ func writable(dir string) bool {
 // ReadOnly is true when the music directory cannot be written (delete and
 // upload are then disabled).
 func (l *Library) ReadOnly() bool { return l.readOnly }
+
+// Root is the library's real (symlink-resolved) root path.
+func (l *Library) Root() string { return l.root }
 
 // CleanRel normalises a user path to "a/b/c" ("" is the root).
 func CleanRel(rel string) string {
@@ -331,7 +331,7 @@ func (l *Library) Delete(rel string) (Trashed, error) {
 		os.RemoveAll(dir)
 		return Trashed{}, err
 	}
-	if err := moveFile(abs, filepath.Join(dir, "f")); err != nil {
+	if err := MoveFile(abs, filepath.Join(dir, "f")); err != nil {
 		os.RemoveAll(dir)
 		return Trashed{}, err
 	}
@@ -359,7 +359,7 @@ func (l *Library) Undo(token string) (string, error) {
 		return "", ErrExists
 	}
 	_ = os.MkdirAll(filepath.Dir(dest), 0o755) // if this fails, the move below reports why
-	if err := moveFile(filepath.Join(dir, "f"), dest); err != nil {
+	if err := MoveFile(filepath.Join(dir, "f"), dest); err != nil {
 		return "", err
 	}
 	os.RemoveAll(dir)
@@ -389,7 +389,9 @@ func (l *Library) PurgeTrash(maxAge time.Duration) (int, error) {
 	return n, nil
 }
 
-func moveFile(src, dst string) error {
+// MoveFile moves a file, falling back to copy-and-remove when a rename cannot
+// cross file systems. It never overwrites an existing destination.
+func MoveFile(src, dst string) error {
 	if err := renameFile(src, dst); err == nil {
 		return nil
 	}
@@ -412,92 +414,4 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	return os.Remove(src)
-}
-
-// SanitizeName reduces an uploaded file name to a safe base name.
-func SanitizeName(name string) string {
-	base := path.Base(strings.ReplaceAll(name, "\\", "/"))
-	var b strings.Builder
-	for _, r := range base {
-		switch {
-		case r < 0x20 || r == 0x7f:
-		case strings.ContainsRune(`<>:"|?*`, r):
-			b.WriteRune('_')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	s := strings.Trim(b.String(), " .")
-	if s == "" || s == "/" {
-		return ""
-	}
-	if rs := []rune(s); len(rs) > 200 {
-		ext := path.Ext(s)
-		if len([]rune(ext)) > 20 {
-			ext = ""
-		}
-		stem := []rune(strings.TrimSuffix(s, ext))
-		s = string(stem[:200-len([]rune(ext))]) + ext
-	}
-	return s
-}
-
-func uniqueName(dir, name string) string {
-	if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
-		return name
-	}
-	ext := path.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-	for i := 1; ; i++ {
-		cand := fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		if _, err := os.Lstat(filepath.Join(dir, cand)); err != nil {
-			return cand
-		}
-	}
-}
-
-// SaveFile stores an uploaded file under dirRel after checking that it
-// really is audio. It never overwrites; clashes get a " (1)" suffix.
-func (l *Library) SaveFile(dirRel, name string, r io.Reader, maxBytes int64) (string, sniff.Kind, error) {
-	if l.readOnly {
-		return "", sniff.Unknown, ErrReadOnly
-	}
-	dirAbs, err := l.Resolve(dirRel)
-	if err != nil {
-		return "", sniff.Unknown, err
-	}
-	safe := SanitizeName(name)
-	if safe == "" {
-		return "", sniff.Unknown, ErrBadName
-	}
-	br := bufio.NewReaderSize(r, 4096)
-	head, _ := br.Peek(512)
-	kind := sniff.Detect(head, safe)
-	if kind == sniff.Unknown {
-		return "", sniff.Unknown, ErrNotAudio
-	}
-	_ = os.MkdirAll(dirAbs, 0o755) // if this fails, CreateTemp below reports why
-	tmp, err := os.CreateTemp(dirAbs, ".upload-*")
-	if err != nil {
-		return "", sniff.Unknown, err
-	}
-	n, err := io.Copy(tmp, io.LimitReader(br, maxBytes+1))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		os.Remove(tmp.Name())
-		return "", sniff.Unknown, err
-	}
-	if n > maxBytes {
-		os.Remove(tmp.Name())
-		return "", sniff.Unknown, ErrTooLarge
-	}
-	final := uniqueName(dirAbs, safe)
-	_ = os.Chmod(tmp.Name(), 0o644) // best effort: CreateTemp files are 0600
-	if err := renameFile(tmp.Name(), filepath.Join(dirAbs, final)); err != nil {
-		os.Remove(tmp.Name())
-		return "", sniff.Unknown, err
-	}
-	return relJoin(CleanRel(dirRel), final), kind, nil
 }

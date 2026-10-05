@@ -19,6 +19,7 @@ import (
 	"masterplayer/internal/library"
 	"masterplayer/internal/store"
 	"masterplayer/internal/transcode"
+	"masterplayer/internal/upload"
 	"masterplayer/web"
 )
 
@@ -85,7 +86,8 @@ func run(cfg config.Config) error {
 		fmt.Printf("warning: %q not found; BRSTM/BCSTM/BFSTM and other game formats will not play\n", cfg.VgmstreamBin)
 	}
 
-	srv := api.New(api.Deps{Cfg: cfg, Lib: lib, Store: st, Auth: a, TX: tx, Log: logger, Static: web.FS})
+	up := upload.New(lib.Root(), cfg.UploadSubdir, cfg.MaxUploadMB<<20, cfg.MinFreeMB<<20)
+	srv := api.New(api.Deps{Cfg: cfg, Lib: lib, Store: st, Auth: a, TX: tx, Up: up, Log: logger, Static: web.FS})
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
 		Handler:           srv.Handler(),
@@ -96,6 +98,7 @@ func run(cfg config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go purgeLoop(ctx, lib, time.Duration(cfg.TrashMinutes)*time.Minute, logger)
+	go up.RunJanitor(ctx, time.Duration(cfg.UploadTTLHours)*time.Hour, time.Hour)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.ListenAndServe() }()

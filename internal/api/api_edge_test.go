@@ -22,13 +22,14 @@ func TestReadOnlyLibraryDisablesWrites(t *testing.T) {
 	wantStatus(t, e.do("DELETE", "/api/track?p=a.mp3", nil, nil), 403)
 	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": "0123456789abcdef"}, nil), 403)
 
-	body, ct := multipartBody(t, map[string][]byte{"x.mp3": mp3With("x", nil)})
-	req := httptest.NewRequest("POST", "/api/upload", body)
-	req.Header.Set("Content-Type", ct)
-	req.Header.Set(csrfHeader, csrfValue)
-	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
-	wantStatus(t, rec, 403)
+	// Every step of the chunked upload is refused, and nothing is created.
+	wantStatus(t, e.do("POST", "/api/upload/start", map[string]string{"title": "x"}, nil), 403)
+	wantStatus(t, e.do("POST", "/api/upload/begin", map[string]any{"relPath": "uploads", "filename": "a.mp3", "size": 1}, nil), 403)
+	wantStatus(t, e.do("POST", "/api/upload/chunk?relPath=uploads&filename=a.mp3&offset=0", "x", nil), 403)
+	wantStatus(t, e.do("POST", "/api/upload/complete", map[string]any{"relPath": "uploads", "filename": "a.mp3", "size": 1}, nil), 403)
+	if _, err := os.Stat(filepath.Join(e.root, "uploads")); err == nil {
+		t.Error("a read-only library must not gain an upload folder")
+	}
 
 	// Reading is unaffected.
 	wantStatus(t, e.do("GET", "/api/browse", nil, nil), 200)
@@ -115,4 +116,23 @@ func TestErrorLogEndpointReportsReadFailures(t *testing.T) {
 	e := newEnv(t, false, false)
 	e.srv.Log = errlog.New(e.data, 0, nil) // a directory cannot be read as a log file
 	wantStatus(t, e.do("GET", "/api/errors", nil, nil), 500)
+}
+
+func TestUploadsFollowTheUploadFolderNotTheLibraryRoot(t *testing.T) {
+	e := newEnv(t, false, false)
+	var sess map[string]any
+	decode(t, e.do("GET", "/api/session", nil, nil), &sess)
+	if sess["canUpload"] != true || sess["canDelete"] != true {
+		t.Fatalf("session: %v", sess)
+	}
+
+	// The upload folder is unusable (a file sits there): uploads are off, deleting still works.
+	os.RemoveAll(filepath.Join(e.root, "uploads")) // the probe above created it
+	os.WriteFile(filepath.Join(e.root, "uploads"), []byte("x"), 0o644)
+	decode(t, e.do("GET", "/api/session", nil, nil), &sess)
+	if sess["canUpload"] != false || sess["canDelete"] != true {
+		t.Errorf("an unusable upload folder only disables uploads: %v", sess)
+	}
+	// Bypassing the UI gets a plain failure (nothing can be created there), not a crash.
+	wantStatus(t, e.do("POST", "/api/upload/start", map[string]string{"title": "x"}, nil), 500)
 }

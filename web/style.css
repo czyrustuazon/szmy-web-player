@@ -37,7 +37,6 @@ body {
   overflow: hidden;
   overscroll-behavior: none;
 }
-body.sheet-open #app { visibility: hidden; }
 [hidden] { display: none !important; }
 
 button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
@@ -53,7 +52,11 @@ input[type="password"], input[type="number"], select {
   width: 100%; min-height: 44px; padding: 8px 12px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--panel2); color: var(--text); font: inherit;
 }
-.primary { min-height: 44px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; }
+.primary, .secondary { min-height: 44px; padding: 0 18px; border-radius: 10px; font-weight: 600; }
+.primary { background: var(--accent); color: #fff; }
+.primary:disabled { opacity: .45; cursor: default; }
+.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+.secondary:disabled { opacity: .45; cursor: default; }
 .err { color: var(--danger); min-height: 1.2em; margin: 0; }
 
 /* ---------------------------------------------------------------- shell */
@@ -166,10 +169,52 @@ input[type="range"] { flex: 1; min-height: 44px; accent-color: var(--accent); ba
   padding: 10px 16px; border-radius: 12px; box-shadow: 0 6px 24px rgb(0 0 0 / .35);
 }
 body:not(.has-player) .toast { bottom: calc(var(--tab-h) + var(--sab) + 12px); }
-body.sheet-open .toast { bottom: calc(var(--sab) + 16px); }
 .toast button { color: var(--accent); font-weight: 700; min-height: 36px; padding: 0 8px; }
 
 @media (min-width: 900px) {
   .list, .top, .mini, .tabs { max-width: 900px; width: 100%; margin-inline: auto; }
   #app { background: var(--bg); }
 }
+
+/* ---------------------------------------------------------------- views (player, upload) */
+.view {
+  flex: 1; overflow-y: auto; overscroll-behavior: contain;
+  width: 100%; max-width: 640px; margin: 0 auto;
+  padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;
+}
+.view[hidden] { display: none; }
+
+/* Player with nothing loaded */
+.np-empty { display: grid; gap: 12px; text-align: center; color: var(--dim); }
+.np-empty p { margin: 0; }
+.row-btns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+#view-player.is-empty .fp-art img { opacity: .7; }
+#view-player.is-empty .seekrow,
+#view-player.is-empty .controls { opacity: .5; }
+.controls .ib:disabled, .seekrow input:disabled { cursor: default; opacity: .4; }
+.controls .play:disabled { background: var(--panel2); color: var(--dim); }
+
+/* Upload */
+.notice { margin: 0; padding: 10px 14px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); font-size: .88rem; }
+.drop {
+  display: grid; justify-items: center; gap: 8px; padding: 28px 16px; min-height: 120px; align-content: center;
+  border: 2px dashed var(--line); border-radius: 16px; color: var(--dim); background: transparent;
+}
+.drop .ic { width: 36px; height: 36px; }
+.drop:hover, .drop.over { border-color: var(--accent); color: var(--accent); }
+.field { display: grid; gap: 6px; color: var(--dim); font-size: .85rem; }
+.field input[type="text"] {
+  width: 100%; min-height: 44px; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--text); font: inherit;
+}
+.files { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.files li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+.files .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files .sz { color: var(--dim); font-size: .78rem; white-space: nowrap; }
+.files .tag { font-size: .7rem; padding: 1px 8px; border-radius: 999px; background: var(--panel2); color: var(--accent); }
+.files .rm { min-width: 36px; min-height: 36px; }
+.results li.ok { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.results li.bad { border-color: var(--danger); }
+.results .why { color: var(--dim); font-size: .8rem; display: block; }
+.progress { height: 10px; border-radius: 999px; background: var(--panel2); overflow: hidden; }
+.progress-fill { height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }

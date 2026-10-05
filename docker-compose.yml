@@ -12,9 +12,15 @@ services:
       # Blank = open access (no login). Set a value to require sign-in.
       MP_ADMIN_PASSWORD: "${MP_ADMIN_PASSWORD:-}"
       MP_READ_ONLY: "${MP_READ_ONLY:-false}"
+      MP_UPLOAD_SUBDIR: "${MP_UPLOAD_SUBDIR:-uploads}"
       MP_COOKIE_SECURE: "${MP_COOKIE_SECURE:-false}"
-      MP_MAX_UPLOAD_MB: "${MP_MAX_UPLOAD_MB:-512}"
+      MP_MAX_UPLOAD_MB: "${MP_MAX_UPLOAD_MB:-61440}"
+      MP_MIN_FREE_MB: "${MP_MIN_FREE_MB:-1024}"
+      MP_UPLOAD_TTL_HOURS: "${MP_UPLOAD_TTL_HOURS:-48}"
     volumes:
       # Append ":ro" to the music mount for a read-only library (delete and upload are then disabled).
       - ${LIBRARY_HOST_PATH:-./music}:/music
+      # Where uploads are stored on the host (default: ./uploads, on the same disk as this project).
+      # It is mounted inside the library, so uploaded music shows up there like everything else.
+      - ${UPLOADS_HOST_PATH:-./uploads}:/music/${MP_UPLOAD_SUBDIR:-uploads}
       - ${DATA_HOST_PATH:-./data}:/data

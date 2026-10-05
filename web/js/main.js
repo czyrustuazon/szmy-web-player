@@ -3,6 +3,7 @@ import { Player } from './player.js';
 import { Queue } from './queue.js';
 import { Visualizer } from './viz.js';
 import { VirtualList } from './ui.js';
+import { initUploadView } from './uploadview.js';
 import { $, fmtTime, icon, escapeHTML, toast, setMarquee, debounce } from './util.js';
 
 const ROW_H = 60;
@@ -14,7 +15,11 @@ const queue = new Queue();
 const state = {
   caps: {},
   settings: null,
-  source: 'library', // library | favorites
+  view: 'player', // player | library | favorites | upload: what the main area shows
+  source: 'library', // library | favorites: where the play queue comes from
+  libLoaded: false,
+  libStale: false,
+  uploadView: null,
   dir: '',
   parent: null,
   entries: [],
@@ -81,8 +86,11 @@ async function loadDir(dir, { keepScroll = false } = {}) {
     state.dir = r.dir;
     state.parent = r.hasParent ? r.parent : null;
     state.entries = r.entries;
+    state.libLoaded = true;
+    state.libStale = false;
     renderHeader();
     list.setItems(state.entries, { keepScroll });
+    setEmpty(state.view === 'library' && !state.dir && state.entries.length === 0);
   } catch (err) {
     toast(err.message);
   }
@@ -93,31 +101,80 @@ async function loadFavorites() {
     state.favTracks = (await api.favorites()).tracks;
     renderHeader();
     list.setItems(state.favTracks);
-    $('#empty').hidden = state.favTracks.length > 0;
+    setEmpty(state.view === 'favorites' && state.favTracks.length === 0);
   } catch (err) {
     toast(err.message);
   }
 }
 
-function renderHeader() {
-  const fav = state.source === 'favorites';
-  $('#title').textContent = fav ? 'Favorites' : state.dir ? state.dir.split('/').pop() : 'Library';
-  $('#btn-back').hidden = fav || state.parent === null;
-  $('#crumbs').textContent = fav ? `${state.favTracks.length} favorite${state.favTracks.length === 1 ? '' : 's'}` : state.dir ? `/${state.dir}` : '';
-  $('#empty').hidden = true;
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.source === state.source));
+// The "nothing here yet" hint over the list.
+function setEmpty(show) {
+  $('#empty').hidden = !show;
 }
 
-async function showSource(source) {
-  state.source = source;
-  if (source === 'favorites') await loadFavorites();
-  else await loadDir(state.dir);
+function renderHeader() {
+  const v = state.view;
+  let title = { player: 'Now Playing', upload: 'Upload music' }[v] || '';
+  let crumbs = '';
+  if (v === 'favorites') {
+    title = 'Favorites';
+    crumbs = `${state.favTracks.length} favorite${state.favTracks.length === 1 ? '' : 's'}`;
+  } else if (v === 'library') {
+    title = state.dir ? state.dir.split('/').pop() : 'Library';
+    crumbs = state.dir ? `/${state.dir}` : '';
+  }
+  $('#title').textContent = title;
+  $('#crumbs').textContent = crumbs;
+  $('#btn-back').hidden = v !== 'library' || state.parent === null;
+  $('#btn-locate').hidden = v !== 'library' && v !== 'favorites';
+  $('#empty').hidden = true;
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === v));
+}
+
+// The mini player is only shown when something is loaded and the full player is not on screen.
+function syncMini() {
+  const has = !!state.meta;
+  $('#mini').hidden = !has || state.view === 'player';
+  document.body.classList.toggle('has-player', has && state.view !== 'player');
+}
+
+// Switches the main area: the player (home), the library, favorites or upload.
+async function showView(view) {
+  state.view = view;
+  const isList = view === 'library' || view === 'favorites';
+  if (isList) state.source = view;
+  $('#list').hidden = !isList;
+  $('#view-player').hidden = view !== 'player';
+  $('#view-upload').hidden = view !== 'upload';
+  syncMini();
+  renderHeader();
+  updateViz();
+  if (view === 'player') {
+    renderTime();
+    if (state.meta) setMarquee($('#fp-title'), state.meta.title); // needs layout, so measure once visible
+  } else if (view === 'upload') {
+    state.uploadView?.show();
+  } else if (view === 'favorites') {
+    $('#empty').textContent = 'No favorites yet. Tap the heart on a track.';
+    await loadFavorites();
+  } else {
+    $('#empty').textContent = 'Your library is empty. Use the Upload tab to add music.';
+    if (state.libStale || !state.libLoaded) await loadDir(state.dir);
+    else list.refresh();
+  }
+}
+
+// Called after an upload: the library on disk changed.
+function libraryChanged() {
+  state.libTracks = null;
+  state.libStale = true;
 }
 
 async function reloadView() {
   state.libTracks = null;
-  if (state.source === 'favorites') await loadFavorites();
-  else await loadDir(state.dir, { keepScroll: true });
+  if (state.view === 'favorites') await loadFavorites();
+  else if (state.view === 'library') await loadDir(state.dir, { keepScroll: true });
+  else state.libStale = true;
 }
 
 async function ensureLibTracks() {
@@ -245,7 +302,7 @@ async function toggleFav(e) {
     state.favTracks = state.favTracks.filter((t) => t.path !== e.path);
     renderHeader();
     list.setItems(state.favTracks, { keepScroll: true });
-    $('#empty').hidden = state.favTracks.length > 0;
+    setEmpty(state.favTracks.length === 0);
   } else {
     list.refresh();
   }
@@ -272,7 +329,7 @@ async function deleteTrack(e) {
   state.favTracks = drop(state.favTracks);
   if (state.libTracks) state.libTracks = drop(state.libTracks);
   list.setItems(state.source === 'favorites' ? state.favTracks : state.entries, { keepScroll: true });
-  $('#empty').hidden = state.source !== 'favorites' || state.favTracks.length > 0;
+  setEmpty(state.view === 'favorites' && state.favTracks.length === 0);
   renderHeader();
 
   const r = queue.remove(e.path);
@@ -301,15 +358,26 @@ async function undoDelete(res) {
 
 // ------------------------------------------------------------------ now playing UI
 
-function showNowPlaying(meta, t) {
+// Renders the player screen for the loaded track, or its empty state when there is none.
+function showNowPlaying(meta) {
   const has = !!meta;
-  $('#mini').hidden = !has;
-  document.body.classList.toggle('has-player', has);
+  $('#view-player').classList.toggle('is-empty', !has);
+  $('#np-empty').hidden = has;
+  for (const id of ['#fp-play', '#fp-prev', '#fp-next', '#fp-fav', '#fp-del', '#fp-seek']) $(id).disabled = !has;
   if (!has) {
-    closeFull();
+    $('#fp-art').src = '/generic.svg';
+    const title = $('#fp-title');
+    title.classList.remove('marquee');
+    title.textContent = 'Nothing playing';
+    $('#fp-artist').textContent = '';
+    $('#fp-meta').textContent = '';
+    $('#fp-loop').hidden = true;
     document.title = 'Master Music Player';
+    syncMini();
+    renderTime();
     return;
   }
+  syncMini();
   const art = meta.hasArt ? api.artURL(meta.path) : '/generic.svg';
   const sub = [meta.artist, meta.album].filter(Boolean).join(' · ');
   $('#mp-art').src = art;
@@ -390,39 +458,16 @@ seek.addEventListener('change', () => {
   seek.blur(); // a focused slider would swallow the keyboard shortcuts
 });
 
-// ------------------------------------------------------------------ full player sheet
+// ------------------------------------------------------------------ navigation
 
-function openFull() {
-  if (!state.meta) return;
-  $('#full').hidden = false;
-  document.body.classList.add('sheet-open');
-  setMarquee($('#fp-title'), state.meta.title); // needs layout, so measure after the sheet is visible
-  renderTime();
-  updateViz();
-}
+$('#mini-open').addEventListener('click', () => showView('player'));
 
-function closeFull() {
-  $('#full').hidden = true;
-  document.body.classList.remove('sheet-open');
-  updateViz();
-}
-
-$('#mini-open').addEventListener('click', openFull);
-$('#fp-close').addEventListener('click', closeFull);
-
-let touchY = null;
-$('#fp-handle').addEventListener('touchstart', (e) => (touchY = e.touches[0].clientY), { passive: true });
-$('#fp-handle').addEventListener('touchmove', (e) => {
-  if (touchY !== null && e.touches[0].clientY - touchY > 80) {
-    touchY = null;
-    closeFull();
-  }
-}, { passive: true });
-
-// Tap the title to jump the list back to the playing track (szmy's tap-to-return cursor).
+// Jump to the playing track in its list (szmy's tap-to-return cursor): from the player's
+// title or the locate button.
 async function locateCurrent() {
   const t = queue.current();
   if (!t) return;
+  await showView(state.source);
   if (state.source === 'favorites') {
     const i = state.favTracks.findIndex((x) => x.path === t.path);
     if (i >= 0) list.scrollToIndex(i);
@@ -434,10 +479,7 @@ async function locateCurrent() {
   if (i >= 0) list.scrollToIndex(i);
 }
 
-$('#fp-title').addEventListener('click', () => {
-  closeFull();
-  locateCurrent();
-});
+$('#fp-title').addEventListener('click', () => state.meta && locateCurrent());
 $('#btn-locate').addEventListener('click', locateCurrent);
 
 // ------------------------------------------------------------------ buttons
@@ -464,7 +506,9 @@ bind('#fp-repeat', () => {
 bind('#fp-fav', () => state.meta && toggleFav({ path: state.meta.path, fav: state.meta.fav }));
 bind('#fp-del', () => state.meta && deleteTrack({ path: state.meta.path, name: state.meta.title }));
 bind('#btn-back', () => state.parent !== null && loadDir(state.parent));
-document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showSource(t.dataset.source)));
+document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showView(t.dataset.view)));
+bind('#np-browse', () => showView('library'));
+bind('#np-upload', () => showView('upload'));
 
 const vol = $('#fp-vol');
 vol.addEventListener('input', () => {
@@ -484,7 +528,7 @@ function ensureViz() {
 
 function updateViz() {
   if (!state.viz) return;
-  const visible = !$('#full').hidden && player.playing;
+  const visible = state.view === 'player' && player.playing;
   if (visible) state.viz.start();
   else state.viz.stop();
 }
@@ -605,31 +649,12 @@ bind('#btn-logout', async () => {
 
 // ------------------------------------------------------------------ upload
 
-async function upload(files) {
-  files = [...files];
-  if (!files.length) return;
-  if (!state.caps.canUpload) return void toast('Uploads are disabled (read-only library)');
-  try {
-    toast('Uploading… 0%', { ms: 120000 });
-    const res = await api.upload(files, '', (f) => toast(`Uploading… ${Math.round(f * 100)}%`, { ms: 120000 }));
-    const n = res.saved.length;
-    const bad = res.rejected.length;
-    toast(`Uploaded ${n} file${n === 1 ? '' : 's'}${bad ? `, skipped ${bad}: ${res.rejected[0].reason}` : ''}`, { ms: 5000 });
-    await reloadView();
-  } catch (err) {
-    toast(`Upload failed: ${err.message}`);
-  }
-}
-
-bind('#btn-upload', () => $('#file-input').click());
-$('#file-input').addEventListener('change', (e) => {
-  upload(e.target.files);
-  e.target.value = '';
-});
+// Files dropped anywhere on the page go to the Upload screen (chunked and resumable, see uploadview.js).
 window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => {
   e.preventDefault();
-  if (e.dataTransfer?.files?.length) upload(e.dataTransfer.files);
+  if (!e.dataTransfer?.files?.length || !state.uploadView) return;
+  showView('upload').then(() => state.uploadView.addFiles([...e.dataTransfer.files]));
 });
 
 // ------------------------------------------------------------------ keyboard (desktop)
@@ -695,7 +720,6 @@ document.addEventListener('keydown', (e) => {
       locateCurrent();
       break;
     case 'Escape':
-      closeFull();
       $('#settings').hidden = true;
       break;
     default:
@@ -729,10 +753,15 @@ async function startApp() {
   $('#app').hidden = false;
   if (state.started) return reloadView();
   state.started = true;
-  $('#btn-upload').hidden = !state.caps.canUpload;
   $('#btn-logout').hidden = !state.caps.authRequired; // nothing to sign out of in open-access mode
+  state.uploadView = initUploadView({
+    caps: state.caps,
+    onUploaded: libraryChanged,
+    goLibrary: () => showView('library'),
+  });
   applySettings(await api.getSettings());
-  await showSource('library');
+  showNowPlaying(null); // the app opens on the player, even with nothing to play
+  await showView('player');
   await restoreResume();
 }
 

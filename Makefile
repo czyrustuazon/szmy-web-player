@@ -7,7 +7,7 @@ SERVICE ?= masterplayer
 
 .DEFAULT_GOAL := help
 .PHONY: help env-check build up dev down restart logs status ps shell clean \
-        test cover deploy smoke \
+        dirs test cover deploy smoke e2e \
         go-build go-run web-test
 
 help: ## Show this help
@@ -24,6 +24,7 @@ help: ## Show this help
 	@echo ""
 	@echo "  make test     Run go vet + go test + the coverage gate in a throwaway container"
 	@echo "  make smoke    Build the image, start it with a fixture library, check login/browse/streaming"
+	@echo "  make e2e      Real uploads end to end (40 MiB resume, .zip and .7z archives)"
 	@echo "  make deploy   git pull + test + up (run on the Ubuntu host)"
 	@echo ""
 	@echo "Without Docker: make go-build, make go-run, make web-test (Node tests for the browser logic)"
@@ -37,14 +38,23 @@ env-check: ## Fail fast with a clear message if .env is missing
 		exit 1; \
 	fi
 
-build: env-check ## Build the image from scratch, ignoring the Docker layer cache
+# Create the host folders as YOU. If Docker creates a missing bind-mount folder it is owned by
+# root, and the app (which runs as PUID) could not write to it.
+dirs: env-check ## Create the library, data and uploads folders as your user
+	@for v in LIBRARY_HOST_PATH:./music DATA_HOST_PATH:./data UPLOADS_HOST_PATH:./uploads; do \
+		name=$${v%%:*}; def=$${v#*:}; \
+		val=$$(grep -E "^$$name=" .env | tail -1 | cut -d= -f2-); \
+		mkdir -p "$${val:-$$def}"; \
+	done
+
+build: env-check dirs ## Build the image from scratch, ignoring the Docker layer cache
 	$(COMPOSE) build --no-cache
 
-up: env-check ## Build from scratch and replace the running container
+up: env-check dirs ## Build from scratch and replace the running container
 	$(COMPOSE) build --no-cache
 	$(COMPOSE) up -d --force-recreate
 
-dev: env-check ## Cached rebuild + always replace the running container (fast iteration)
+dev: env-check dirs ## Cached rebuild + always replace the running container (fast iteration)
 	$(COMPOSE) build
 	$(COMPOSE) up -d --force-recreate
 
@@ -76,6 +86,9 @@ test: ## Run go vet + go test + coverage gate in a throwaway container
 
 smoke: ## Build the image, start it with a fixture library, check login/browse/streaming
 	sh scripts/smoke.sh
+
+e2e: ## Real uploads end to end: 40 MiB resume, .zip and .7z archives (builds the image)
+	sh scripts/e2e.sh
 
 deploy: ## git pull + test + up (run on the Ubuntu host)
 	git pull

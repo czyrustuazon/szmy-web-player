@@ -9,6 +9,14 @@ export function fmtTime(sec) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
 }
 
+export function fmtBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
 export function icon(name) {
   return `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 }

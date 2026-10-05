@@ -23,6 +23,7 @@ import (
 	"masterplayer/internal/sniff"
 	"masterplayer/internal/store"
 	"masterplayer/internal/transcode"
+	"masterplayer/internal/upload"
 )
 
 const (
@@ -44,6 +45,7 @@ type Deps struct {
 	Store  *store.Store
 	Auth   *auth.Auth
 	TX     *transcode.Service // nil when vgmstream-cli is not installed
+	Up     *upload.Manager
 	Log    *errlog.Logger
 	Static fs.FS
 }
@@ -88,7 +90,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/prefetch", s.protect(s.prefetch))
 	mux.HandleFunc("DELETE /api/track", s.protect(s.deleteTrack))
 	mux.HandleFunc("POST /api/undo", s.protect(s.undoDelete))
-	mux.HandleFunc("POST /api/upload", s.protect(s.upload))
+	mux.HandleFunc("POST /api/upload/start", s.protect(s.uploadStart))
+	mux.HandleFunc("POST /api/upload/begin", s.protect(s.uploadBegin))
+	mux.HandleFunc("POST /api/upload/chunk", s.protect(s.uploadChunk))
+	mux.HandleFunc("POST /api/upload/complete", s.protect(s.uploadComplete))
+	mux.HandleFunc("GET /api/upload/status", s.protect(s.uploadStatus))
 	mux.HandleFunc("GET /api/settings", s.protect(s.getSettings))
 	mux.HandleFunc("PUT /api/settings", s.protect(s.putSettings))
 	mux.HandleFunc("GET /api/resume", s.protect(s.getResume))
@@ -173,17 +179,26 @@ func (s *Server) fail(w http.ResponseWriter, err error, site, p string) {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		status = http.StatusNotFound
-	case errors.Is(err, library.ErrReadOnly), errors.Is(err, library.ErrHidden), errors.Is(err, library.ErrOutside):
+	case errors.Is(err, library.ErrReadOnly), errors.Is(err, library.ErrHidden), errors.Is(err, library.ErrOutside), errors.Is(err, fs.ErrPermission):
 		status = http.StatusForbidden
 	case errors.Is(err, library.ErrNotAudio):
 		status = http.StatusUnsupportedMediaType
 		s.Log.Append(errlog.CodeUnsupported, site, p, "")
-	case errors.Is(err, library.ErrTooLarge):
-		status = http.StatusRequestEntityTooLarge
-	case errors.Is(err, library.ErrNotFile), errors.Is(err, library.ErrBadToken), errors.Is(err, library.ErrBadName):
+	case errors.Is(err, library.ErrNotFile), errors.Is(err, library.ErrBadToken):
 		status = http.StatusBadRequest
 	case errors.Is(err, library.ErrExists):
 		status = http.StatusConflict
+	case errors.Is(err, upload.ErrTooLarge):
+		status = http.StatusRequestEntityTooLarge
+	case errors.Is(err, upload.ErrNoSpace):
+		status = http.StatusInsufficientStorage
+	case errors.Is(err, upload.ErrUnsupported):
+		status = http.StatusUnsupportedMediaType
+	case errors.Is(err, upload.ErrNoDest):
+		status = http.StatusNotFound
+	case errors.Is(err, upload.ErrBadPath), errors.Is(err, upload.ErrBadName), errors.Is(err, upload.ErrBadSize),
+		errors.Is(err, upload.ErrNoSession), errors.Is(err, upload.ErrOverrun), errors.Is(err, upload.ErrIncomplete):
+		status = http.StatusBadRequest
 	}
 	msg := err.Error()
 	if status >= 500 {
@@ -217,9 +232,11 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		"authenticated": s.authed(r),
 		"authRequired":  !s.Auth.Disabled(),
 		"canDelete":     !s.Lib.ReadOnly(),
-		"canUpload":     !s.Lib.ReadOnly(),
+		"canUpload":     s.canUpload(),
 		"vgmstream":     s.TX != nil,
 		"uploadDir":     s.Cfg.UploadSubdir,
+		"maxUploadMB":   s.Cfg.MaxUploadMB,
+		"sevenZip":      s.Up.SevenZipAvailable(),
 	})
 }
 
@@ -510,66 +527,6 @@ func (s *Server) undoDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": p, "fav": rec.wasFav})
-}
-
-// ---------------------------------------------------------------- upload
-
-type savedDTO struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-}
-
-type rejectedDTO struct {
-	Name   string `json:"name"`
-	Reason string `json:"reason"`
-}
-
-func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
-	if s.Lib.ReadOnly() {
-		writeErr(w, http.StatusForbidden, library.ErrReadOnly.Error())
-		return
-	}
-	limit := s.Cfg.MaxUploadMB << 20
-	r.Body = http.MaxBytesReader(w, r.Body, limit+(1<<20))
-	mr, err := r.MultipartReader()
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "expected a multipart upload")
-		return
-	}
-	dir := r.URL.Query().Get("dir")
-	if dir == "" {
-		dir = s.Cfg.UploadSubdir
-	}
-	saved := []savedDTO{}
-	rejected := []rejectedDTO{}
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			s.Log.Append(errlog.CodeUpload, "upload", dir, err.Error())
-			rejected = append(rejected, rejectedDTO{Name: "(upload)", Reason: "upload interrupted or too large"})
-			break
-		}
-		name := part.FileName()
-		if name == "" {
-			continue
-		}
-		rel, kind, err := s.Lib.SaveFile(dir, name, part, limit)
-		if err != nil {
-			code := errlog.CodeUpload
-			if errors.Is(err, library.ErrNotAudio) {
-				code = errlog.CodeUnsupported
-			}
-			s.Log.Append(code, "upload", name, err.Error())
-			rejected = append(rejected, rejectedDTO{Name: name, Reason: err.Error()})
-			continue
-		}
-		saved = append(saved, savedDTO{Path: rel, Name: path.Base(rel), Kind: kind.String()})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"saved": saved, "rejected": rejected})
 }
 
 // ---------------------------------------------------------------- settings / resume / log

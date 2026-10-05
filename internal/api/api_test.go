@@ -6,8 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +24,7 @@ import (
 	"masterplayer/internal/library"
 	"masterplayer/internal/store"
 	"masterplayer/internal/transcode"
+	"masterplayer/internal/upload"
 )
 
 // ---------------------------------------------------------------- fixtures
@@ -132,8 +133,8 @@ func newEnvOpts(t *testing.T, withTX, authOn, readOnly bool) *env {
 		}
 	}
 	e.srv = New(Deps{
-		Cfg:   config.Config{UploadSubdir: "uploads", MaxUploadMB: 1},
-		Lib:   lib, Store: st, Auth: a, TX: tx, Log: logs,
+		Cfg:   config.Config{UploadSubdir: "uploads", MaxUploadMB: 1, ReadOnly: readOnly},
+		Lib:   lib, Store: st, Auth: a, TX: tx, Log: logs, Up: upload.New(lib.Root(), "uploads", 1<<30, 0),
 		Static: fstest.MapFS{"index.html": {Data: []byte("<h1>app</h1>")}, "sw.js": {Data: []byte("//sw")}},
 	})
 	e.srv.failDelay = 0
@@ -523,98 +524,6 @@ func TestDeleteErrorsAndUndoBookkeeping(t *testing.T) {
 	wantStatus(t, e.do("POST", "/api/undo", map[string]string{"token": del["token"]}, nil), 200)
 }
 
-func multipartBody(t *testing.T, files map[string][]byte) (*bytes.Buffer, string) {
-	t.Helper()
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	_ = mw.WriteField("note", "ignored non-file field")
-	for name, data := range files {
-		fw, err := mw.CreateFormFile("files", name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fw.Write(data)
-	}
-	mw.Close()
-	return &buf, mw.FormDataContentType()
-}
-
-func TestUpload(t *testing.T) {
-	e := newEnv(t, false, true)
-	c := e.login()
-	body, ct := multipartBody(t, map[string][]byte{
-		"New Song.mp3": mp3With("Uploaded", nil),
-		"readme.txt":   []byte("not audio"),
-	})
-	req := httptest.NewRequest("POST", "/api/upload", body)
-	req.Header.Set("Content-Type", ct)
-	req.Header.Set(csrfHeader, csrfValue)
-	req.AddCookie(c)
-	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
-	wantStatus(t, rec, 200)
-
-	var res struct {
-		Saved    []savedDTO    `json:"saved"`
-		Rejected []rejectedDTO `json:"rejected"`
-	}
-	decode(t, rec, &res)
-	if len(res.Saved) != 1 || res.Saved[0].Path != "uploads/New Song.mp3" || res.Saved[0].Kind != "mp3" {
-		t.Fatalf("saved: %+v", res)
-	}
-	if len(res.Rejected) != 1 || res.Rejected[0].Name != "readme.txt" {
-		t.Fatalf("rejected: %+v", res.Rejected)
-	}
-	if _, err := os.Stat(filepath.Join(e.root, "uploads", "New Song.mp3")); err != nil {
-		t.Fatal("uploaded file missing")
-	}
-	if _, err := os.Stat(filepath.Join(e.root, "uploads", "readme.txt")); err == nil {
-		t.Fatal("non-audio file must not be stored")
-	}
-
-	// Custom target folder.
-	body, ct = multipartBody(t, map[string][]byte{"x.mp3": mp3With("X", nil)})
-	req = httptest.NewRequest("POST", "/api/upload?dir=sub/new", body)
-	req.Header.Set("Content-Type", ct)
-	req.Header.Set(csrfHeader, csrfValue)
-	req.AddCookie(c)
-	rec = httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
-	decode(t, rec, &res)
-	if len(res.Saved) != 1 || res.Saved[0].Path != "sub/new/x.mp3" {
-		t.Fatalf("custom dir: %+v", res)
-	}
-}
-
-func TestUploadRejections(t *testing.T) {
-	e := newEnv(t, false, true)
-	wantStatus(t, e.do("POST", "/api/upload", nil, nil), 401)
-	c := e.login()
-	wantStatus(t, e.do("POST", "/api/upload", "plain body", c), 400) // not multipart
-
-	// Over the size limit (MaxUploadMB is 1 in the test config).
-	big := append(mp3With("big", nil), bytes.Repeat([]byte{1}, 2<<20)...)
-	body, ct := multipartBody(t, map[string][]byte{"big.mp3": big})
-	req := httptest.NewRequest("POST", "/api/upload", body)
-	req.Header.Set("Content-Type", ct)
-	req.Header.Set(csrfHeader, csrfValue)
-	req.AddCookie(c)
-	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
-	wantStatus(t, rec, 200)
-	var res struct {
-		Saved    []savedDTO    `json:"saved"`
-		Rejected []rejectedDTO `json:"rejected"`
-	}
-	decode(t, rec, &res)
-	if len(res.Saved) != 0 || len(res.Rejected) == 0 {
-		t.Fatalf("oversized upload must be rejected: %+v", res)
-	}
-	if es, _ := os.ReadDir(filepath.Join(e.root, "uploads")); len(es) != 0 {
-		t.Errorf("rejected upload left files: %v", es)
-	}
-}
-
 func TestSettingsAndResume(t *testing.T) {
 	e := newEnv(t, false, false)
 	var s store.Settings
@@ -688,8 +597,9 @@ func TestFailMapsInternalErrorsWithoutLeaking(t *testing.T) {
 		t.Errorf("details belong in the log: %v", lines)
 	}
 	for err, code := range map[error]int{
-		library.ErrExists: 409, library.ErrTooLarge: 413, library.ErrBadName: 400,
-		library.ErrOutside: 403, library.ErrReadOnly: 403, library.ErrNotAudio: 415,
+		library.ErrExists: 409, upload.ErrTooLarge: 413, upload.ErrBadName: 400, upload.ErrNoSpace: 507,
+		upload.ErrUnsupported: 415, upload.ErrNoDest: 404, upload.ErrOverrun: 400, upload.ErrIncomplete: 400,
+		library.ErrOutside: 403, library.ErrReadOnly: 403, library.ErrNotAudio: 415, fs.ErrPermission: 403,
 	} {
 		rec = httptest.NewRecorder()
 		e.srv.fail(rec, err, "s", "p")

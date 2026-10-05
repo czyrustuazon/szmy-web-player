@@ -3,7 +3,6 @@ package library
 import (
 	"bytes"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -80,9 +79,6 @@ func TestForcedReadOnlyGuards(t *testing.T) {
 	}
 	if _, err := ro.Undo("0123456789abcdef"); !errors.Is(err, ErrReadOnly) {
 		t.Errorf("undo: %v", err)
-	}
-	if _, _, err := ro.SaveFile("up", "a.mp3", bytes.NewReader(mp3), 1<<20); !errors.Is(err, ErrReadOnly) {
-		t.Errorf("save: %v", err)
 	}
 	if !ro.ReadOnly() {
 		t.Error("ReadOnly accessor")
@@ -370,16 +366,16 @@ func TestMoveFileFallbackCopies(t *testing.T) {
 	src := filepath.Join(dir, "a.bin")
 	mustWrite(t, src, []byte("payload"))
 	// Renaming onto an existing directory fails, which exercises the copy path's error handling.
-	if err := moveFile(src, dir); err == nil {
+	if err := MoveFile(src, dir); err == nil {
 		t.Error("expected error moving onto a directory")
 	}
-	if err := moveFile(filepath.Join(dir, "missing"), filepath.Join(dir, "x")); err == nil {
+	if err := MoveFile(filepath.Join(dir, "missing"), filepath.Join(dir, "x")); err == nil {
 		t.Error("missing source")
 	}
 	// The copy path itself, called through a destination whose rename would fail on
 	// some platforms; here we only verify that a plain move works end to end.
 	dst := filepath.Join(dir, "b.bin")
-	if err := moveFile(src, dst); err != nil {
+	if err := MoveFile(src, dst); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ := os.ReadFile(dst); string(data) != "payload" {
@@ -387,108 +383,13 @@ func TestMoveFileFallbackCopies(t *testing.T) {
 	}
 }
 
-func TestSanitizeName(t *testing.T) {
-	cases := map[string]string{
-		"song.mp3":               "song.mp3",
-		"../../etc/passwd":       "passwd",
-		`C:\Users\me\track.flac`: "track.flac",
-		"a<b>c:d\"e|f?g*h.mp3":   "a_b_c_d_e_f_g_h.mp3",
-		"  spaced.mp3  ":         "spaced.mp3",
-		".hidden.mp3":            "hidden.mp3",
-		"tab\tname\x00.wav":      "tabname.wav",
-		"":                       "",
-		"...":                    "",
-		"/":                      "",
-		"日本語.brstm":              "日本語.brstm",
-	}
-	for in, want := range cases {
-		if got := SanitizeName(in); got != want {
-			t.Errorf("%q: got %q want %q", in, got, want)
-		}
-	}
-	long := SanitizeName(strings.Repeat("a", 300) + ".mp3")
-	if len([]rune(long)) != 200 || !strings.HasSuffix(long, ".mp3") {
-		t.Errorf("long name: %d runes, %q", len([]rune(long)), long[len(long)-8:])
-	}
-	longExt := SanitizeName("x." + strings.Repeat("e", 300))
-	if len([]rune(longExt)) != 200 {
-		t.Errorf("long extension: %d runes", len([]rune(longExt)))
-	}
-}
 
-func TestSaveFile(t *testing.T) {
+func TestRootIsTheResolvedLibraryPath(t *testing.T) {
 	l, root := newLib(t)
-	if l.ReadOnly() {
-		t.Skip("read-only temp dir")
-	}
-	rel, kind, err := l.SaveFile("uploads", "My Song.mp3", bytes.NewReader(mp3), 1<<20)
-	if err != nil || rel != "uploads/My Song.mp3" || kind != sniff.MP3 {
-		t.Fatalf("save: %q %v %v", rel, kind, err)
-	}
-	if data, _ := os.ReadFile(filepath.Join(root, "uploads", "My Song.mp3")); !bytes.Equal(data, mp3) {
-		t.Error("content mismatch")
-	}
-	if st, _ := os.Stat(filepath.Join(root, "uploads", "My Song.mp3")); st.Mode().Perm()&0o044 == 0 && filepath.Separator == '/' {
-		t.Errorf("upload should be world readable, mode %v", st.Mode())
-	}
-
-	// Same name again gets a numeric suffix instead of overwriting.
-	rel2, _, err := l.SaveFile("uploads", "My Song.mp3", bytes.NewReader(mp3), 1<<20)
-	if err != nil || rel2 != "uploads/My Song (1).mp3" {
-		t.Fatalf("clash: %q %v", rel2, err)
-	}
-	rel3, _, _ := l.SaveFile("uploads", "My Song.mp3", bytes.NewReader(mp3), 1<<20)
-	if rel3 != "uploads/My Song (2).mp3" {
-		t.Fatalf("second clash: %q", rel3)
-	}
-
-	// Content decides, not the name: a disguised text file is rejected, a renamed MP3 accepted.
-	if _, _, err := l.SaveFile("uploads", "fake.mp3.txt", strings.NewReader("just text"), 1<<20); !errors.Is(err, ErrNotAudio) {
-		t.Errorf("text: %v", err)
-	}
-	if _, kind, err := l.SaveFile("uploads", "noext", bytes.NewReader(mp3), 1<<20); err != nil || kind != sniff.MP3 {
-		t.Errorf("sniffed: %v %v", kind, err)
-	}
-	// Path tricks in the file name stay inside the folder.
-	rel4, _, err := l.SaveFile("uploads", "../../escape.mp3", bytes.NewReader(mp3), 1<<20)
-	if err != nil || rel4 != "uploads/escape.mp3" {
-		t.Errorf("traversal: %q %v", rel4, err)
-	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "escape.mp3")); err == nil {
-		t.Error("file escaped the library")
+	if got, _ := filepath.EvalSymlinks(root); l.Root() != got {
+		t.Errorf("got %q want %q", l.Root(), got)
 	}
 }
-
-func TestSaveFileErrors(t *testing.T) {
-	l, root := newLib(t)
-	if l.ReadOnly() {
-		t.Skip("read-only temp dir")
-	}
-	big := append(append([]byte{}, mp3...), bytes.Repeat([]byte{1}, 5000)...)
-	if _, _, err := l.SaveFile("uploads", "big.mp3", bytes.NewReader(big), 1000); !errors.Is(err, ErrTooLarge) {
-		t.Errorf("too large: %v", err)
-	}
-	if _, _, err := l.SaveFile("uploads", "...", bytes.NewReader(mp3), 1000); !errors.Is(err, ErrBadName) {
-		t.Errorf("bad name: %v", err)
-	}
-	if _, _, err := l.SaveFile(".trash", "a.mp3", bytes.NewReader(mp3), 1000); !errors.Is(err, ErrHidden) {
-		t.Errorf("hidden dir: %v", err)
-	}
-	if _, _, err := l.SaveFile("alpha.wav", "a.mp3", bytes.NewReader(mp3), 1<<20); err == nil {
-		t.Error("destination folder is a file")
-	}
-	if _, _, err := l.SaveFile("uploads", "err.mp3", io.MultiReader(bytes.NewReader(mp3), errReader{}), 1<<20); err == nil {
-		t.Error("reader failure must be reported")
-	}
-	// Failed uploads leave no temp files behind.
-	if es, _ := os.ReadDir(filepath.Join(root, "uploads")); len(es) != 0 {
-		t.Errorf("leftovers: %v", es)
-	}
-}
-
-type errReader struct{}
-
-func (errReader) Read([]byte) (int, error) { return 0, errors.New("boom") }
 
 func TestCleanRel(t *testing.T) {
 	cases := map[string]string{"": "", "/": "", "a/b": "a/b", "/a//b/": "a/b", "a/../b": "b", "../a": "a"}
