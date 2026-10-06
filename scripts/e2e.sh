@@ -36,7 +36,10 @@ docker run --rm -v "$tmp/fixtures:/f" --entrypoint sh "$IMG" -c '
   printf "#!/bin/sh\nrm -rf /\n" > src/Album/run.sh
   ln -s /etc/passwd src/Album/link.mp3
   7z a -tzip -snl album.zip src/Album >/dev/null
-  7z a -snl album.7z src/Album >/dev/null
+  # 7z would create a link on disk, so the server refuses a .7z holding one: keep it out of the
+  # album and put it in an archive of its own.
+  7z a -snl -xr!link.mp3 album.7z src/Album >/dev/null
+  7z a -snl linked.7z src/Album >/dev/null
   # Formats browsers cannot play, made by the ffmpeg inside the image (it has no APE encoder).
   mkdir -p ff
   tone="-f lavfi -i sine=frequency=440:duration=2"

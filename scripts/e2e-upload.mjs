@@ -99,8 +99,7 @@ for (const [archive, title] of [['album.zip', 'Zip Album'], ['album.7z', '7z Alb
   const dir = path.join(MUSIC, 'uploads', title);
   const names = walk(dir).map((p) => path.relative(dir, p)).sort();
   check(JSON.stringify(names) === JSON.stringify(['01.mp3', '02.mp3', 'CD2/03.mp3', 'cover.jpg']), `${archive}: the audio files and the real cover picture, wrapper folder removed (${names.join(', ')})`);
-  // The 7z extractor materialises the symlink (and it is dropped); the zip reader never writes one.
-  const wantTypes = archive.endsWith('.7z') ? { txt: 1, sh: 1, png: 1, mp3: 1 } : { txt: 1, sh: 1, png: 1 };
+  const wantTypes = { txt: 1, sh: 1, png: 1 };
   const wantSkipped = Object.values(wantTypes).reduce((a, b) => a + b, 0);
   check(r.images === 1 && r.skipped === wantSkipped, `${archive}: one picture kept, ${wantSkipped} files skipped (${r.images}, ${r.skipped})`);
   const types = r.skippedTypes || {};
@@ -115,6 +114,15 @@ for (const [archive, title] of [['album.zip', 'Zip Album'], ['album.7z', '7z Alb
   check(!tracksOfAlbum.some((t) => t.path.endsWith('.jpg')) && !(await (await fetch(`${BASE}/api/browse?dir=${encodeURIComponent('uploads/' + title)}`)).text()).includes('cover.jpg'), `${archive}: pictures are not listed as library files`);
   check(walk(dir).every((p) => !fs.lstatSync(p).isSymbolicLink()), `${archive}: no symlinks`);
   check(fs.readdirSync(dir).every((n) => !n.startsWith('.')), `${archive}: no scratch folders left behind`);
+}
+
+// ---- 2a. a .7z holding a link is refused outright (the zip reader just skips links)
+{
+  const up = createUploader({ transport: realTransport, storage: memoryStorage(), pollMs: 200 });
+  const [r] = await up.uploadBatch([fileOf('linked.7z')], { title: 'Linked' });
+  check(r.state !== 'done' && /link/.test(r.error || ''), `linked.7z: refused (${r.error || r.state})`);
+  const dir = path.join(MUSIC, 'uploads', 'Linked');
+  check(!fs.existsSync(dir) || walk(dir).length === 0, 'linked.7z: nothing was stored');
 }
 
 // ---- 2b. uploading again into the same folder adds only what is new and never duplicates
@@ -165,7 +173,13 @@ for (const [archive, title] of [['album.zip', 'Zip Album'], ['album.7z', '7z Alb
 
 // ---- 4. nothing is left staged, and the uploads are really in the library
 {
-  check(walk(path.join(MUSIC, 'uploads', '.uploads')).filter((p) => !p.includes('/reports/')).length === 0, 'the staging area holds nothing but the skipped-file reports');
+  // A refused archive stays staged (a retry need not send it again) until the janitor removes
+  // it after MP_UPLOAD_TTL_HOURS; that is linked.7z here.
+  const staged = walk(path.join(MUSIC, 'uploads', '.uploads')).filter((p) => !p.includes('/reports/'));
+  const refusedKeys = staged.filter((p) => p.endsWith('.json') && fs.readFileSync(p, 'utf8').includes('linked.7z')).map((p) => path.basename(p, '.json'));
+  check(refusedKeys.length === 1, `the refused linked.7z is still staged for a retry (${refusedKeys.length})`);
+  const leftovers = staged.filter((p) => !refusedKeys.includes(path.basename(p).replace(/\.(json|partial)$/, '')));
+  check(leftovers.length === 0, `the staging area holds nothing but the skipped-file reports (${leftovers.map((p) => path.relative(MUSIC, p)).join(', ')})`);
   check(fs.existsSync('/e2e/uploads-host/.uploads'), 'staging lives inside the uploads folder (the same disk as the result)');
   check(!fs.existsSync(path.join(MUSIC, '.uploads')), 'nothing is staged on the library disk');
   const hostCopy = '/e2e/uploads-host/Big/big.mp3';
