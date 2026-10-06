@@ -9,6 +9,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
+  <script src="/js/theme.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -174,6 +175,15 @@
     <label>Fade-out seconds <input id="set-fade" type="number" min="0" max="30" inputmode="numeric"></label>
     <label>Visualizer
       <select id="set-viz"><option value="bars">Equalizer bars</option><option value="scope">Waveform</option><option value="off">Off</option></select>
+    </label>
+    <label>Theme
+      <select id="set-theme">
+        <option value="system">Match system</option>
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="night">Night (warm, dim)</option>
+        <option value="auto-night">Night from 10 pm to 7 am</option>
+      </select>
     </label>
     <label class="check"><input id="set-guard" type="checkbox"> Require a double press for lock-screen next / previous</label>
     <details><summary>Error log</summary><pre id="errlog"></pre></details>

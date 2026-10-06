@@ -871,6 +871,9 @@ bind('#btn-settings', async () => {
     $('#errlog').textContent = err.message;
   }
 });
+$('#set-theme').value = window.mmpTheme.get();
+$('#set-theme').addEventListener('change', (e) => window.mmpTheme.set(e.target.value));
+
 bind('#set-close', () => ($('#settings').hidden = true));
 bind('#btn-logout', async () => {
   await api.logout().catch(() => {});

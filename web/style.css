@@ -10,15 +10,20 @@
   --danger: #ff6b5a;
   --line: #2b333d;
   --viz: #5ab0ff;
+  --on-accent: #fff;
   --tab-h: 56px;
   --mini-h: 64px;
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
+  color-scheme: dark;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', 'Noto Sans JP', 'Noto Sans CJK JP', 'Hiragino Sans', 'Yu Gothic', Meiryo, sans-serif;
 }
 
+/* Themes: dark is the base. With no data-theme the OS preference decides;
+   js/theme.js sets data-theme="dark" | "light" | "night" to override it. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
+    color-scheme: light;
     --bg: #f5f7fa;
     --panel: #ffffff;
     --panel2: #e9edf2;
@@ -30,6 +35,34 @@
     --viz: #0a6cd1;
   }
 }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --panel2: #e9edf2;
+  --text: #151a20;
+  --dim: #5b6674;
+  --accent: #0a6cd1;
+  --talk: #a8670a;
+  --line: #d5dbe3;
+  --viz: #0a6cd1;
+}
+/* Night: warm and dim, with very little blue light, for listening in the dark. */
+:root[data-theme="night"] {
+  --bg: #0b0806;
+  --panel: #14100c;
+  --panel2: #1e1813;
+  --text: #dcc4a2;
+  --dim: #8f7a60;
+  --accent: #d98a3a;
+  --on-accent: #1a1007;
+  --fav: #c96456;
+  --talk: #c99a48;
+  --danger: #d26a4c;
+  --line: #2a2119;
+  --viz: #b8712e;
+}
+:root[data-theme="night"] img { filter: brightness(.75) sepia(.25); }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; }
@@ -55,7 +88,7 @@ input[type="password"], input[type="number"], select {
   border: 1px solid var(--line); background: var(--panel2); color: var(--text); font: inherit;
 }
 .primary, .secondary { min-height: 44px; padding: 0 18px; border-radius: 10px; font-weight: 600; }
-.primary { background: var(--accent); color: #fff; }
+.primary { background: var(--accent); color: var(--on-accent); }
 a.btn { display: grid; place-items: center; text-decoration: none; }
 .primary:disabled { opacity: .45; cursor: default; }
 .secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
@@ -157,7 +190,7 @@ input[type="range"] { flex: 1; min-height: 44px; accent-color: var(--accent); ba
 
 .controls { display: flex; align-items: center; justify-content: space-between; }
 .controls .ib .ic { width: 28px; height: 28px; }
-.controls .play { width: 64px; height: 64px; background: var(--accent); color: #fff; }
+.controls .play { width: 64px; height: 64px; background: var(--accent); color: var(--on-accent); }
 .controls .play .ic { width: 34px; height: 34px; }
 .controls .play:active { background: var(--accent); filter: brightness(.9); }
 .controls.second { gap: 8px; }
