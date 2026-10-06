@@ -4,6 +4,7 @@ import { Queue } from './queue.js';
 import { Visualizer, bars, scope } from '../lib/media-kit/viz/index.js';
 import { VirtualList } from '../lib/media-kit/virtual-list.js';
 import { initUploadView } from './uploadview.js';
+import * as pip from './pip.js';
 import { SearchState, SEP, stemOf, dirOf, highlight } from './searchstate.js';
 import { $, kindLabel, fmtTime, icon, escapeHTML, toast, ask, setMarquee, debounce } from './util.js';
 
@@ -550,6 +551,7 @@ function showNowPlaying(meta) {
     document.title = 'Master Music Player';
     syncMini();
     renderTime();
+    pip.sync();
     return;
   }
   syncMini();
@@ -568,6 +570,7 @@ function showNowPlaying(meta) {
   updateMediaSession(meta);
   list.refresh();
   renderTime();
+  pip.sync();
 }
 
 // Genre, year, track number and how often this track has been listened to through.
@@ -600,6 +603,7 @@ function renderMarkButtons() {
     b.innerHTML = icon(on ? m.on : m.off);
     b.setAttribute('aria-label', on ? m.remove : m.add);
   }
+  pip.sync();
 }
 
 function renderTransport() {
@@ -615,6 +619,7 @@ function renderTransport() {
     rep.classList.toggle('on', s.repeat !== 'off');
     rep.dataset.mode = s.repeat;
   }
+  pip.sync();
 }
 
 function renderTime() {
@@ -626,6 +631,7 @@ function renderTime() {
   }
   $('#fp-dur').textContent = fmtTime(dur);
   $('#mp-bar').style.width = dur ? `${(pos / dur) * 100}%` : '0';
+  pip.syncTime();
   if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && dur && player.playing) {
     try {
       navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(pos, dur), playbackRate: 1 });
@@ -724,6 +730,14 @@ document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () 
 bind('#np-browse', () => showView('library'));
 bind('#np-upload', () => showView('upload'));
 
+// The pop-out player (see pip.js): an always-on-top window that stays up while you use other tabs.
+$('#btn-pip').hidden = !pip.supported;
+bind('#btn-pip', () => pip.toggle().catch((err) => toast(`Could not pop out the player: ${err.message}`)));
+pip.init(player, (open) => {
+  $('#btn-pip').classList.toggle('on', open);
+  $('#btn-pip').setAttribute('aria-label', open ? 'Close pop-out player' : 'Pop out player');
+});
+
 const vol = $('#fp-vol');
 vol.addEventListener('input', () => {
   player.setVolume(Number(vol.value));
@@ -783,6 +797,8 @@ if ('mediaSession' in navigator) {
   set('seekto', (d) => player.seek(d.seekTime));
   set('seekbackward', () => player.seek(player.position - 10));
   set('seekforward', () => player.seek(player.position + 10));
+  // Chrome may open the pop-out by itself when you switch tabs while music plays.
+  if ('documentPictureInPicture' in window) set('enterpictureinpicture', () => pip.open().catch(() => {}));
 }
 
 let wake = null;
@@ -935,6 +951,9 @@ document.addEventListener('keydown', (e) => {
       break;
     case 'l':
       locateCurrent();
+      break;
+    case 'i':
+      if (pip.supported) $('#btn-pip').click();
       break;
     case '/':
       e.preventDefault(); // jump to the search box, on the library unless you are in favorites or talk

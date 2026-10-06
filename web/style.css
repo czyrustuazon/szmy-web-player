@@ -145,6 +145,7 @@ a.btn { display: grid; place-items: center; text-decoration: none; }
 
 .fp-art { position: relative; width: min(100%, 52vh, 420px); aspect-ratio: 1; margin: 0 auto; border-radius: 16px; overflow: hidden; background: var(--panel2); }
 .fp-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fp-art .fp-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .fp-art canvas { position: absolute; inset: auto 0 0 0; width: 100%; height: 45%; opacity: .85; cursor: pointer; }
 .fp-info { display: grid; gap: 4px; }
 .big-title { font-size: 1.3rem; font-weight: 700; cursor: pointer; }
@@ -261,3 +262,24 @@ body:not(.has-player) .toast { bottom: calc(var(--tab-h) + var(--sab) + 12px); }
 }
 .searchbar input::-webkit-search-cancel-button { display: none; }
 mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+
+/* ---------------------------------------------------------------- pop-out player (pip.js) */
+.pip {
+  height: 100%; display: grid; align-content: center; gap: 4px 12px; padding: 10px 14px;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "art info" "seek seek" "ctl ctl" "ctl2 ctl2";
+}
+.pip-art { grid-area: art; width: 64px; height: 64px; border-radius: 8px; object-fit: cover; background: var(--panel2); }
+.pip-info { grid-area: info; align-self: center; min-width: 0; display: grid; gap: 2px; }
+.pip-title { font-weight: 700; }
+.pip .seekrow { grid-area: seek; }
+.pip .controls { grid-area: ctl; }
+.pip .controls.second { grid-area: ctl2; }
+.pip input[type="range"] { min-height: 32px; }
+.pip .controls .play { width: 52px; height: 52px; }
+.pip .controls .play .ic { width: 30px; height: 30px; }
+/* A tall pop-out gets the big cover on top, like the player screen. */
+@media (min-height: 420px) {
+  .pip { grid-template-columns: minmax(0, 1fr); grid-template-areas: "art" "info" "seek" "ctl" "ctl2"; }
+  .pip-art { width: min(100%, calc(100vh - 250px)); height: auto; aspect-ratio: 1; justify-self: center; border-radius: 14px; }
+}
