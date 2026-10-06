@@ -6,6 +6,7 @@ import { VirtualList } from '../lib/media-kit/virtual-list.js';
 import { initUploadView } from './uploadview.js';
 import * as pip from './pip.js';
 import { SearchState, SEP, stemOf, dirOf, highlight } from './searchstate.js';
+import { UpNext } from './upnext.js';
 import { $, kindLabel, fmtTime, icon, escapeHTML, toast, ask, setMarquee, debounce } from './util.js';
 
 const ROW_H = 60;
@@ -15,6 +16,8 @@ const player = new Player();
 const queue = new Queue();
 const search = new SearchState(); // the fuzzy search over the current track list
 let searchToken = 0; // lets a newer keystroke cancel an older search
+const UPNEXT_KEY = 'mmp-upnext';
+const upNext = new UpNext(loadUpNext()); // tracks picked to play next, ahead of the queue
 
 const state = {
   caps: {},
@@ -32,6 +35,8 @@ const state = {
   libTracks: null, // cached playable list for the whole library
   meta: null,
   playToken: 0,
+  track: null, // the track loaded in the player (from the queue, or from up next)
+  fromUpNext: false, // it came from up next, so the queue's own position is the track before it
   skips: 0,
   lastAuto: false,
   started: false,
@@ -56,6 +61,13 @@ function markButton(kind, on) {
   return `<button class="ib ${kind}${on ? ' on' : ''}" data-act="${kind}" aria-label="${on ? m.remove : m.add}">${icon(on ? m.on : m.off)}</button>`;
 }
 
+// A track's up-next button: a plus while it is not listed, its place in the list once it is.
+function queueButton(path) {
+  const n = upNext.position(path);
+  if (!n) return `<button class="ib queue" data-act="queue" aria-label="Add to up next">${icon('queue')}</button>`;
+  return `<button class="ib queue on" data-act="queue" aria-label="Number ${n} in up next, tap to take it out"><span class="qn">${n}</span></button>`;
+}
+
 function stem(name) {
   const i = name.lastIndexOf('.');
   return i > 0 ? name.slice(0, i) : name;
@@ -67,7 +79,7 @@ function fmtSize(n) {
 
 function renderRow(e) {
   const row = document.createElement('div');
-  const current = queue.current()?.path === e.path && !e.isDir;
+  const current = state.track?.path === e.path && !e.isDir;
   row.className = `row${current ? ' current' : ''}${!e.isDir && !e.playable ? ' dim' : ''}`;
   let sub = '';
   if (!e.isDir) {
@@ -84,12 +96,13 @@ function renderRow(e) {
   }
   let actions = '';
   if (e.isDir) {
+    actions = `<button class="ib queue" data-act="queue" aria-label="Add folder to up next">${icon('queue')}</button>`;
     if (state.caps.canDelete && !search.active && !isMarked(state.source)) {
-      actions = `<button class="ib" data-act="rename" aria-label="Rename folder">${icon('edit')}</button><button class="ib del" data-act="del" aria-label="Delete folder">${icon('trash')}</button>`;
+      actions += `<button class="ib" data-act="rename" aria-label="Rename folder">${icon('edit')}</button><button class="ib del" data-act="del" aria-label="Delete folder">${icon('trash')}</button>`;
     }
     actions += icon('chev');
   } else if (e.playable) {
-    actions = markButton('talk', e.talk) + markButton('fav', e.fav);
+    actions = queueButton(e.path) + markButton('talk', e.talk) + markButton('fav', e.fav);
     if (state.caps.canDelete) actions += `<button class="ib del" data-act="del" aria-label="Delete">${icon('trash')}</button>`;
   }
   row.innerHTML = `${icon(e.isDir ? 'folder' : 'music')}<div class="rtxt"><div class="rname">${nameHTML}</div><div class="rsub">${subHTML}</div></div><div class="ractions">${actions}</div>`;
@@ -102,6 +115,7 @@ $('#list').addEventListener('click', (ev) => {
   const e = list.items[Number(row.dataset.idx)];
   if (!e) return;
   const act = ev.target.closest('button')?.dataset.act;
+  if (act === 'queue') return void toggleUpNext(e);
   if (act === 'fav' || act === 'talk') return void toggleMark(act, e);
   if (act === 'del') return void deleteTrack(e);
   if (act === 'rename') return void renameFolder(e);
@@ -234,6 +248,7 @@ async function showView(view) {
   if (isList) state.source = view;
   $('#list').hidden = !isList;
   $('#searchbar').hidden = !isList;
+  syncUpbar();
   $('#view-player').hidden = view !== 'player';
   $('#view-upload').hidden = view !== 'upload';
   syncMini();
@@ -277,10 +292,11 @@ async function ensureLibTracks() {
 
 async function playEntry(e) {
   try {
-    // Playing from search results queues the results, in ranked order.
-    const tracks = search.active ? search.items() : isMarked(state.source) ? markedTracks(state.source) : await ensureLibTracks();
+    // Search only finds the track: the queue is always the whole list it was found in, so
+    // next and shuffle carry on over the library (or favorites / talk), not the matches.
+    const tracks = isMarked(state.source) ? markedTracks(state.source) : await ensureLibTracks();
     let idx = tracks.findIndex((t) => t.path === e.path);
-    if (idx < 0 && state.source === 'library' && !search.active) {
+    if (idx < 0 && state.source === 'library') {
       state.libTracks = null;
       const fresh = await ensureLibTracks();
       idx = fresh.findIndex((t) => t.path === e.path);
@@ -290,6 +306,7 @@ async function playEntry(e) {
     }
     if (queue.index < 0) return void toast('Track not found');
     state.skips = 0;
+    state.fromUpNext = false;
     await startTrack(queue.current(), { auto: false });
   } catch (err) {
     toast(err.message);
@@ -300,6 +317,8 @@ async function playEntry(e) {
 async function startTrack(t, { autoplay = true, position = 0, auto = false, silent = false } = {}) {
   const token = ++state.playToken;
   state.lastAuto = auto;
+  state.track = t;
+  renderUpNext(); // marks the playing up-next row, or unmarks it
   let meta;
   try {
     meta = await api.meta(t.path);
@@ -315,8 +334,21 @@ async function startTrack(t, { autoplay = true, position = 0, auto = false, sile
   const ok = await player.load(t, meta, { autoplay, position });
   if (!ok || token !== state.playToken) return;
   state.skips = 0;
-  const nx = queue.peekNext();
+  const nx = upNext.items[upNext.index + 1] || queue.peekNext();
   if (nx) api.prefetch(nx.path).catch(() => {});
+}
+
+// What plays after the current track: up next goes first (like foobar2000's playback queue; its
+// tracks stay listed, a cursor marks the last one played), then the queue carries on from where it was.
+function nextTrack(auto) {
+  if (auto && queue.repeat === 'one' && state.track) return state.track;
+  const u = upNext.next();
+  if (u) {
+    state.fromUpNext = true;
+    return u;
+  }
+  state.fromUpNext = false;
+  return queue.next(auto);
 }
 
 function onTrackFailed(t, message) {
@@ -329,7 +361,7 @@ function onTrackFailed(t, message) {
 }
 
 function advance(auto) {
-  const n = queue.next(auto);
+  const n = nextTrack(auto);
   if (!n) {
     player.pause();
     list.refresh();
@@ -341,7 +373,13 @@ function advance(auto) {
 
 function previous() {
   if (player.position > 3) return player.seek(0);
-  const p = queue.previous();
+  // From an up-next track, back is the one before it in up next, and from the first one the
+  // queue track that was playing before up next started.
+  let p = state.fromUpNext ? upNext.previous() : null;
+  if (!p) {
+    p = state.fromUpNext && queue.current() ? queue.current() : queue.previous();
+    state.fromUpNext = false;
+  }
   if (p) {
     list.refresh();
     startTrack(p, { auto: false });
@@ -364,7 +402,7 @@ function guarded(fn) {
 }
 
 player.addEventListener('ended', () => {
-  const t = queue.current();
+  const t = state.track;
   if (t) {
     api
       .played(t.path)
@@ -379,7 +417,7 @@ player.addEventListener('ended', () => {
   advance(true);
 });
 player.addEventListener('error', (ev) => {
-  const t = queue.current();
+  const t = state.track;
   if (t) onTrackFailed(t, ev.detail.message);
   else toast(ev.detail.message);
 });
@@ -438,6 +476,152 @@ async function toggleMark(kind, e, { quiet = false } = {}) {
   });
 }
 
+// ------------------------------------------------------------------ up next
+
+const UPNEXT_SHOWN = 100; // rows drawn in the player's up-next panel; the rest are counted
+const UPNEXT_TTL_KEY = 'mmp-upnext-ttl'; // minutes of disuse before the list clears itself; 0 = never
+const UPNEXT_TTL_DEFAULT = 120;
+
+// The list and its timer are per device, like the theme, so they live in localStorage.
+function loadUpNext() {
+  try {
+    return JSON.parse(localStorage.getItem(UPNEXT_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUpNext() {
+  try {
+    localStorage.setItem(UPNEXT_KEY, JSON.stringify(upNext));
+  } catch {
+    /* storage full or blocked: the list still works until reload */
+  }
+}
+
+function upNextTTL() {
+  try {
+    const v = localStorage.getItem(UPNEXT_TTL_KEY);
+    return v === null ? UPNEXT_TTL_DEFAULT : Number(v) || 0;
+  } catch {
+    return UPNEXT_TTL_DEFAULT;
+  }
+}
+
+const fmtMinutes = (m) => (m % 60 ? `${m} min` : `${m / 60} h`);
+
+// Clears the whole list once it has gone unused (nothing added, nothing played from it) for the
+// time set in Settings. A track from it that is still playing counts as use.
+function expireUpNext() {
+  if (!state.started) return;
+  if (state.fromUpNext && player.playing) {
+    upNext.touch();
+    return void saveUpNext();
+  }
+  const ttl = upNextTTL();
+  if (!upNext.idle(ttl * 60000)) return;
+  const old = upNext.clear();
+  state.fromUpNext = false;
+  toast(`Up next cleared after ${fmtMinutes(ttl)} unused`, { action: 'Undo', ms: 8000, onAction: () => upNext.replace(old) });
+}
+setInterval(expireUpNext, 60000);
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && expireUpNext());
+
+upNext.addEventListener('change', () => {
+  saveUpNext();
+  renderUpNext();
+  list.refresh();
+});
+
+// The row's up-next button: adds the track (or a folder's tracks), or takes a listed track out.
+async function toggleUpNext(e) {
+  if (!e.isDir && upNext.remove(e.path)) return void toast(`Took ${stem(e.name)} out of up next`, { ms: 1500 });
+  let tracks = [e];
+  try {
+    if (e.isDir) tracks = (await api.tracks(e.path)).tracks;
+  } catch (err) {
+    return void toast(err.message);
+  }
+  const added = tracks.filter((t) => !upNext.position(t.path));
+  if (!upNext.add(added)) return void toast(e.isDir ? `Nothing to add from ${e.name}` : 'Already in up next', { ms: 1500 });
+  const what = e.isDir ? `${added.length} track${added.length === 1 ? '' : 's'} from ${e.name}` : stem(e.name);
+  toast(`Added ${what} to up next`, {
+    action: 'Undo',
+    ms: 5000,
+    onAction: () => {
+      const paths = new Set(added.map((t) => t.path));
+      upNext.removeWhere((t) => paths.has(t.path));
+    },
+  });
+  // Nothing loaded yet: make the next pick ready in the player, so Play starts the list.
+  if (!state.track) {
+    const t = upNext.next();
+    if (!t) return;
+    state.fromUpNext = true;
+    startTrack(t, { autoplay: false });
+  }
+}
+
+function clearUpNext() {
+  const old = upNext.clear();
+  const n = old.items.length;
+  if (!n) return;
+  state.fromUpNext = false;
+  toast(`Cleared up next (${n} track${n === 1 ? '' : 's'})`, { action: 'Undo', ms: 5000, onAction: () => upNext.replace(old) });
+}
+
+// The panel under the player controls, and the bar over the lists.
+function renderUpNext() {
+  const n = upNext.length;
+  $('#upnext').hidden = !n;
+  $('#upnext-count').textContent = n ? `(${n})` : '';
+  // A long list starts a few tracks before the cursor, so what plays next is always in view.
+  const from = n > UPNEXT_SHOWN ? Math.max(0, Math.min(upNext.index - 3, n - UPNEXT_SHOWN)) : 0;
+  const shown = upNext.items.slice(from, from + UPNEXT_SHOWN);
+  const playing = state.fromUpNext ? upNext.index : -1;
+  $('#upnext-list').innerHTML =
+    (from ? `<li class="sub">${from} played above</li>` : '') +
+    shown
+      .map((t, k) => {
+        const i = from + k;
+        const cls = i === playing ? 'now' : i <= upNext.index ? 'played' : '';
+        return (
+          `<li data-idx="${i}" class="${cls}"><button class="nm" data-act="play"><span class="n">${i + 1}</span><span class="t">${escapeHTML(stem(t.name))}</span></button>` +
+          `<button class="ib rm" data-act="rm" aria-label="Take out of up next">${icon('close')}</button></li>`
+        );
+      })
+      .join('') +
+    (n > from + shown.length ? `<li class="sub">and ${n - from - shown.length} more</li>` : '');
+  syncUpbar();
+}
+
+function syncUpbar() {
+  const n = upNext.length;
+  const isList = state.view === 'library' || isMarked(state.view);
+  $('#upbar').hidden = !n || !isList;
+  if (!n) return;
+  const nx = upNext.items[upNext.index + 1];
+  $('#upbar-show').textContent = `${n} up next · ${nx ? `${stem(nx.name)} plays next` : 'all played'}`;
+}
+
+$('#upnext-list').addEventListener('click', (ev) => {
+  const li = ev.target.closest('li[data-idx]');
+  const t = li && upNext.items[Number(li.dataset.idx)];
+  const act = ev.target.closest('button')?.dataset.act;
+  if (!t || !act) return;
+  if (act === 'rm') return void upNext.remove(t.path);
+  state.fromUpNext = true; // before select(), so the redraw marks this row as playing
+  state.skips = 0;
+  upNext.select(Number(li.dataset.idx));
+  startTrack(t, { auto: false });
+});
+$('#upnext-clear').addEventListener('click', clearUpNext);
+$('#upbar-clear').addEventListener('click', clearUpNext);
+$('#upbar-show').addEventListener('click', async () => {
+  await showView('player');
+  $('#upnext').scrollIntoView({ block: 'start', behavior: 'smooth' });
+});
+
 async function renameFolder(e) {
   const name = (await ask({
     title: 'Rename folder',
@@ -454,6 +638,7 @@ async function renameFolder(e) {
     return void toast(err.message);
   }
   queue.renameUnder(e.path, res.path);
+  upNext.renameUnder(e.path, res.path);
   if (state.meta?.path.startsWith(`${e.path}/`)) state.meta.path = res.path + state.meta.path.slice(e.path.length);
   state.libTracks = null;
   await reloadView();
@@ -477,6 +662,7 @@ async function mergeFolder(e, name) {
     return void toast(err.message);
   }
   queue.remap(res.moves);
+  upNext.remap(res.moves);
   if (state.meta && Object.hasOwn(res.moves, state.meta.path)) state.meta.path = res.moves[state.meta.path];
   state.libTracks = null;
   await reloadView();
@@ -508,14 +694,22 @@ async function deleteTrack(e) {
   updateEmpty();
   renderHeader();
 
+  const playingGone = !!state.track && inside(state.track);
   const r = e.isDir ? queue.removeUnder(e.path) : queue.remove(e.path);
-  if (r.wasCurrent) {
-    if (r.next) {
+  upNext.removeWhere(inside);
+  // The playing track went: hand off to what plays next, as szmy does. For an up-next track
+  // that is the rest of up next, then the queue; otherwise the track that slid into its place.
+  let next = null;
+  if (playingGone) next = state.fromUpNext ? nextTrack(false) : r.next; // not repeat-one: the track is gone
+  if (playingGone) {
+    if (next) {
       list.refresh();
-      startTrack(r.next, { auto: true, autoplay: wasPlaying }); // hand off to the next track, as szmy does
+      startTrack(next, { auto: true, autoplay: wasPlaying });
     } else {
       player.clear();
       state.meta = null;
+      state.track = null;
+      state.fromUpNext = false;
       showNowPlaying(null);
     }
   }
@@ -659,7 +853,7 @@ $('#mini-open').addEventListener('click', () => showView('player'));
 // Jump to the playing track in its list (szmy's tap-to-return cursor): from the player's
 // title or the locate button.
 async function locateCurrent() {
-  const t = queue.current();
+  const t = state.track;
   if (!t) return;
   clearSearch(); // the track must be visible in its own list, not filtered out of it
   await showView(state.source);
@@ -821,7 +1015,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function saveResume() {
-  const t = queue.current();
+  const t = state.track;
   if (!t || !state.started) return;
   api.putResume({ path: t.path, position: player.position, source: state.source }).catch(() => {});
 }
@@ -870,6 +1064,16 @@ bind('#btn-settings', async () => {
   } catch (err) {
     $('#errlog').textContent = err.message;
   }
+});
+$('#set-upnext-ttl').value = String(upNextTTL());
+$('#set-upnext-ttl').addEventListener('change', (e) => {
+  try {
+    localStorage.setItem(UPNEXT_TTL_KEY, e.target.value);
+  } catch {
+    /* blocked storage: the default stays */
+  }
+  upNext.touch(); // the new time counts from now
+  saveUpNext();
 });
 $('#set-theme').value = window.mmpTheme.get();
 $('#set-theme').addEventListener('change', (e) => window.mmpTheme.set(e.target.value));
@@ -1010,6 +1214,8 @@ async function startApp() {
   });
   applySettings(await api.getSettings());
   showNowPlaying(null); // the app opens on the player, even with nothing to play
+  renderUpNext();
+  expireUpNext(); // it may have sat unused while the app was closed
   await showView('player');
   await restoreResume();
 }

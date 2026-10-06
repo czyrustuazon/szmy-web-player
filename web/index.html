@@ -37,6 +37,7 @@
     <symbol id="i-settings" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></symbol>
     <symbol id="i-pip" viewBox="0 0 24 24"><path d="M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z"/></symbol>
     <symbol id="i-spinner" viewBox="0 0 24 24"><path d="M12 4V2A10 10 0 002 12h2a8 8 0 018-8z"/></symbol>
   </defs>
 </svg>
@@ -70,6 +71,12 @@
     <svg class="ic"><use href="#i-search"/></svg>
     <input id="search-input" type="search" placeholder="Search tracks (typos are fine)" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search tracks">
     <button id="search-clear" class="ib" aria-label="Clear search" hidden><svg class="ic"><use href="#i-close"/></svg></button>
+  </div>
+
+  <div id="upbar" class="upbar" hidden>
+    <svg class="ic"><use href="#i-queue"/></svg>
+    <button id="upbar-show" class="upbar-txt" type="button"></button>
+    <button id="upbar-clear" class="upbar-clear" type="button">Clear</button>
   </div>
 
   <main id="list" class="list" hidden></main>
@@ -111,6 +118,14 @@
       <input id="fp-vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
       <button id="fp-del" class="ib del" aria-label="Delete track"><svg class="ic"><use href="#i-trash"/></svg></button>
     </div>
+    <section id="upnext" class="upnext" hidden aria-label="Up next">
+      <div class="up-head">
+        <h2>Up next <span id="upnext-count" class="sub"></span></h2>
+        <button id="upnext-clear" class="secondary" type="button">Clear</button>
+      </div>
+      <p class="up-hint">Plays before the list carries on. The whole list clears itself after a while unused (see Settings).</p>
+      <ol id="upnext-list" class="files"></ol>
+    </section>
   </section>
 
   <section id="view-upload" class="view" hidden aria-label="Upload music">
@@ -175,6 +190,17 @@
     <label>Fade-out seconds <input id="set-fade" type="number" min="0" max="30" inputmode="numeric"></label>
     <label>Visualizer
       <select id="set-viz"><option value="bars">Equalizer bars</option><option value="scope">Waveform</option><option value="off">Off</option></select>
+    </label>
+    <label>Clear up next after it sits unused for
+      <select id="set-upnext-ttl">
+        <option value="30">30 minutes</option>
+        <option value="60">1 hour</option>
+        <option value="120">2 hours</option>
+        <option value="240">4 hours</option>
+        <option value="480">8 hours</option>
+        <option value="1440">1 day</option>
+        <option value="0">Never</option>
+      </select>
     </label>
     <label>Theme
       <select id="set-theme">

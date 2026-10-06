@@ -122,6 +122,7 @@ Settings choose what happens at the end of the intro: **loop N times then fade o
 | *(new)* | **Fuzzy search** on the Library and Favorites screens (see below) |
 | Konami code | Yes |
 | *(new)* | **Favorites** (heart on every track) and a **Talk** list for speech-only files (microphone on every track), keyboard shortcuts, Media Session lock-screen controls, installable PWA |
+| *(new)* | **Up next**, a temporary list like foobar2000's playback queue: the + on any track or folder (also in search results) adds it; it plays before the queue carries on and keeps its tracks as they play. One tap clears it (with Undo), and it clears itself after sitting unused for a set time (Settings, default 2 h). Kept per device in the browser |
 
 Keyboard (desktop): `Space` play/pause, `←`/`→` seek 5 s (`Shift` = previous/next), `↑`/`↓`
 volume, `N`/`P` next/previous, `S` shuffle, `R` repeat, `F` favorite, `T` talk, `L` locate, `/` search, `Esc` close.

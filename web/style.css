@@ -316,3 +316,27 @@ mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: in
   .pip { grid-template-columns: minmax(0, 1fr); grid-template-areas: "art" "info" "seek" "ctl" "ctl2"; }
   .pip-art { width: min(100%, calc(100vh - 250px)); height: auto; aspect-ratio: 1; justify-self: center; border-radius: 14px; }
 }
+
+/* ---------------------------------------------------------------- up next (temporary playback queue) */
+.ib.queue .ic { width: 22px; height: 22px; }
+.ib.queue.on { color: var(--accent); }
+.qn {
+  min-width: 24px; height: 24px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
+  background: var(--accent); color: var(--on-accent); font-size: .75rem; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.upbar { display: flex; align-items: center; gap: 8px; padding: 0 4px 0 14px; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--accent); }
+.upbar-txt { flex: 1; min-width: 0; min-height: 40px; text-align: left; font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.upbar-clear { min-height: 40px; padding: 0 12px; font-weight: 700; color: var(--accent); }
+.upnext { display: grid; gap: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+.up-head { display: flex; align-items: center; gap: 8px; }
+.up-head h2 { flex: 1; margin: 0; font-size: 1rem; }
+.up-head .secondary { min-height: 36px; padding: 0 14px; }
+.up-hint { margin: 0; color: var(--dim); font-size: .8rem; }
+.upnext .files li { padding: 0 4px 0 12px; }
+.upnext .nm { min-height: 44px; display: flex; align-items: center; gap: 10px; text-align: left; }
+.upnext .nm .n { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 1.6em; }
+.upnext .nm .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upnext li.played .n, .upnext li.played .t { color: var(--dim); }
+.upnext li.now { border-color: var(--accent); }
+.upnext li.now .t { color: var(--accent); font-weight: 600; }
+@media (min-width: 900px) { .upbar { max-width: 900px; width: 100%; margin-inline: auto; } }
