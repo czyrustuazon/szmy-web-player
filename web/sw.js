@@ -1,6 +1,6 @@
 // Minimal service worker: makes the app installable and keeps the shell
 // available offline. API traffic (audio, art, JSON) is never cached.
-const SHELL = 'mmp-shell-v7';
+const SHELL = 'mmp-shell-v8';
 const FILES = ['/', '/style.css', '/icon.svg', '/generic.svg', '/js/main.js', '/js/api.js', '/js/player.js', '/js/queue.js', '/js/util.js', '/js/uploadview.js', '/js/searchstate.js', '/js/pip.js', '/js/pipvideo.js', '/js/theme.js', '/js/upnext.js',
   '/lib/media-kit/viz/index.js', '/lib/media-kit/viz/core.js', '/lib/media-kit/viz/bars.js', '/lib/media-kit/viz/scope.js',
   '/lib/media-kit/virtual-list.js', '/lib/media-kit/upload.js', '/lib/media-kit/fuzzy.js'];
