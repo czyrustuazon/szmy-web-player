@@ -342,9 +342,9 @@ func (s *Store) MoveTalk(from, to string) error {
 	return s.save()
 }
 
-// Remap moves favorites, talk marks and play counts from the old path of each file to its new
-// one (after a folder merge). A mark lands on the new path unless that path has it already;
-// play counts add up.
+// Remap moves favorites, talk marks, play counts and the resume point from the old path of each
+// file to its new one (after a folder merge or a name fix). A mark lands on the new path unless
+// that path has it already; play counts add up.
 func (s *Store) Remap(moves map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -359,6 +359,10 @@ func (s *Store) Remap(moves map[string]string) error {
 		if n, ok := s.st.Plays[from]; ok {
 			delete(s.st.Plays, from)
 			s.st.Plays[to] += n
+			changed = true
+		}
+		if s.st.Resume.Path == from {
+			s.st.Resume.Path = to
 			changed = true
 		}
 	}

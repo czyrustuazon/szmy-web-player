@@ -296,6 +296,10 @@ func TestRemapFollowsMovedFilesAndMergesDuplicates(t *testing.T) {
 	if s.Plays("a/x.mp3") != 0 || s.Plays("b/x (2).mp3") != 1 || s.Plays("b/y.mp3") != 3 {
 		t.Errorf("play counts follow and add up: %d %d", s.Plays("b/x (2).mp3"), s.Plays("b/y.mp3"))
 	}
+	s.SetResume(Resume{Path: "a/z.mp3", Position: 12, Source: "library"})
+	if err := s.Remap(map[string]string{"a/z.mp3": "b/z.mp3"}); err != nil || s.Resume().Path != "b/z.mp3" || s.Resume().Position != 12 {
+		t.Errorf("the resume point follows its file: %+v", s.Resume())
+	}
 	again, _ := Open(p)
 	if !again.IsFavorite("b/x (2).mp3") || again.Plays("b/y.mp3") != 3 {
 		t.Error("the remap must be saved")

@@ -114,6 +114,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/track", s.protect(s.deleteTrack))
 	mux.HandleFunc("POST /api/rename", s.protect(s.renameFolder))
 	mux.HandleFunc("POST /api/merge", s.protect(s.mergeFolder))
+	mux.HandleFunc("GET /api/fixnames", s.protect(s.planNames))
+	mux.HandleFunc("POST /api/fixnames", s.protect(s.fixNames))
 	mux.HandleFunc("POST /api/undo", s.protect(s.undoDelete))
 	mux.HandleFunc("POST /api/upload/start", s.protect(s.uploadStart))
 	mux.HandleFunc("POST /api/upload/begin", s.protect(s.uploadBegin))
@@ -783,6 +785,26 @@ func (s *Server) mergeFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path": res.Path, "moved": res.Moved, "duplicates": res.Duplicates, "skipped": res.Skipped, "moves": res.Moves,
 	})
+}
+
+// planNames lists the renames fixNames would make: {moves: {old path: new path}}.
+func (s *Server) planNames(w http.ResponseWriter, r *http.Request) {
+	moves, _ := s.Lib.FixNames(true) // a dry run never fails
+	writeJSON(w, http.StatusOK, map[string]any{"moves": moves})
+}
+
+// fixNames gives files and folders whose names carry unzip's "#Uxxxx" escapes their real
+// names (see library.FixNames); favorites, play counts and the resume point follow them.
+func (s *Server) fixNames(w http.ResponseWriter, r *http.Request) {
+	moves, err := s.Lib.FixNames(false)
+	if err != nil {
+		s.fail(w, err, "fixnames", "")
+		return
+	}
+	if rerr := s.Store.Remap(moves); rerr != nil {
+		s.Log.Append(errlog.CodeIO, "fixnames", "", rerr.Error())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"moves": moves})
 }
 
 func (s *Server) rememberUndo(token string, rec undoRec) {

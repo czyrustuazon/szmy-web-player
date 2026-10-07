@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -223,4 +224,48 @@ func TestMergeFolders(t *testing.T) {
 	if !strings.Contains(strings.Join(lines, "\n"), "site=merge") {
 		t.Errorf("a failed favorites update should be logged: %v", lines)
 	}
+}
+
+func TestFixNames(t *testing.T) {
+	e := newEnv(t, false, false)
+	write(t, filepath.Join(e.root, "#U30a2", "01 #U3010#U30aa#U3011.mp3"), mp3With("Escaped", nil))
+	write(t, filepath.Join(e.root, ".trash", "#U30aa.mp3"), mp3With("Trashed", nil))
+	e.srv.Store.SetFavorite("#U30a2/01 #U3010#U30aa#U3011.mp3", true)
+	want := map[string]string{"#U30a2/01 #U3010#U30aa#U3011.mp3": "ア/01 【オ】.mp3"}
+	var out struct{ Moves map[string]string }
+
+	decode(t, e.do("GET", "/api/fixnames", nil, nil), &out)
+	if !reflect.DeepEqual(out.Moves, want) {
+		t.Fatalf("plan: %v", out.Moves)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, "#U30a2")); err != nil {
+		t.Error("planning renames nothing")
+	}
+
+	rec := e.do("POST", "/api/fixnames", nil, nil)
+	wantStatus(t, rec, 200)
+	decode(t, rec, &out)
+	if !reflect.DeepEqual(out.Moves, want) {
+		t.Fatalf("fix: %v", out.Moves)
+	}
+	if !e.srv.Store.IsFavorite("ア/01 【オ】.mp3") {
+		t.Error("favorites follow the files")
+	}
+	wantStatus(t, e.do("GET", "/api/meta?p="+url.QueryEscape("ア/01 【オ】.mp3"), nil, nil), 200)
+	if _, err := os.Stat(filepath.Join(e.root, ".trash", "#U30aa.mp3")); err != nil {
+		t.Error("hidden folders are left alone")
+	}
+
+	// If saving favorites fails the renames still happened; the problem is logged.
+	write(t, filepath.Join(e.root, "#U30aa.mp3"), mp3With("B", nil))
+	e.srv.Store.SetFavorite("#U30aa.mp3", true)
+	os.Mkdir(filepath.Join(e.data, "state.json.tmp"), 0o755)
+	wantStatus(t, e.do("POST", "/api/fixnames", nil, nil), 200)
+	if lines, _ := e.logs.Recent(50); !strings.Contains(strings.Join(lines, "\n"), "site=fixnames") {
+		t.Errorf("a failed favorites update should be logged: %v", lines)
+	}
+
+	ro := newEnvOpts(t, false, false, true)
+	wantStatus(t, ro.do("GET", "/api/fixnames", nil, nil), 200)
+	wantStatus(t, ro.do("POST", "/api/fixnames", nil, nil), 403)
 }

@@ -661,12 +661,46 @@ async function mergeFolder(e, name) {
   } catch (err) {
     return void toast(err.message);
   }
-  queue.remap(res.moves);
-  upNext.remap(res.moves);
-  if (state.meta && Object.hasOwn(res.moves, state.meta.path)) state.meta.path = res.moves[state.meta.path];
+  await followMoves(res.moves);
+  toast(`Merged into ${name}: ${res.moved} moved, ${res.duplicates} already there`);
+}
+
+// Files moved on the server (a merge, a name fix): point the queue, up next and the playing
+// track at where they are now, and redraw.
+async function followMoves(moves) {
+  queue.remap(moves);
+  upNext.remap(moves);
+  if (state.meta && Object.hasOwn(moves, state.meta.path)) state.meta.path = moves[state.meta.path];
   state.libTracks = null;
   await reloadView();
-  toast(`Merged into ${name}: ${res.moved} moved, ${res.duplicates} already there`);
+}
+
+// Names like "#U3010#U30aa…" come from an archive that was unpacked in a non-UTF-8 locale and
+// packed again; the escapes hold the real characters, so the server can put them back.
+async function fixNames() {
+  let res;
+  try {
+    res = await api.planNames();
+  } catch (err) {
+    return void toast(err.message);
+  }
+  const moves = Object.entries(res.moves);
+  if (!moves.length) return void toast('No garbled names found');
+  const [from, to] = moves[0];
+  const yes = await ask({
+    title: `Fix ${moves.length} name${moves.length === 1 ? '' : 's'}?`,
+    message: `For example:\n${from.split('/').pop()}\n→ ${to.split('/').pop()}\n\nFavorites and play counts follow the files. Nothing is overwritten.`,
+    ok: 'Fix names',
+  });
+  if (!yes) return;
+  try {
+    res = await api.fixNames();
+  } catch (err) {
+    return void toast(err.message);
+  }
+  await followMoves(res.moves);
+  const n = Object.keys(res.moves).length;
+  toast(`Fixed ${n} name${n === 1 ? '' : 's'}`);
 }
 
 async function deleteTrack(e) {
@@ -1079,6 +1113,7 @@ $('#set-theme').value = window.mmpTheme.get();
 $('#set-theme').addEventListener('change', (e) => window.mmpTheme.set(e.target.value));
 
 bind('#set-close', () => ($('#settings').hidden = true));
+bind('#btn-fixnames', fixNames);
 bind('#btn-logout', async () => {
   await api.logout().catch(() => {});
   location.reload();
@@ -1207,6 +1242,7 @@ async function startApp() {
   if (state.started) return reloadView();
   state.started = true;
   $('#btn-logout').hidden = !state.caps.authRequired; // nothing to sign out of in open-access mode
+  $('#btn-fixnames').hidden = !state.caps.canDelete; // a read-only library cannot be renamed
   state.uploadView = initUploadView({
     caps: state.caps,
     onUploaded: libraryChanged,
